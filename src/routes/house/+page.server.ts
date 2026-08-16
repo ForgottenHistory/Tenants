@@ -5,6 +5,7 @@ import { houseService } from '$lib/server/services/houseService';
 import { tenantService } from '$lib/server/services/tenantService';
 import { occupancyService } from '$lib/server/services/occupancyService';
 import { houseSceneService } from '$lib/server/services/houseSceneService';
+import { relationService } from '$lib/server/services/relationService';
 import { LEASE_WARNING_DAYS } from '$lib/house/tenancy';
 
 export const load: PageServerLoad = async ({ cookies }) => {
@@ -61,6 +62,14 @@ export const load: PageServerLoad = async ({ cookies }) => {
 		.filter((t) => t.daysLeft <= LEASE_WARNING_DAYS)
 		.sort((a, b) => a.daysLeft - b.daysLeft);
 
+	// What the housemates have been doing off-screen, where they stand, and the
+	// scenes that have been condensed into memory.
+	const [houseEvents, relations, sceneSummaries] = await Promise.all([
+		relationService.getRecentEvents(activeHouse.id),
+		relationService.getHouseRelations(activeHouse.id),
+		houseSceneService.getSummarisedScenes(activeHouse.id, 20)
+	]);
+
 	// Maps don't survive serialisation to the client — send plain arrays.
 	return {
 		user,
@@ -72,6 +81,9 @@ export const load: PageServerLoad = async ({ cookies }) => {
 			away: presence.away
 		},
 		openThreads,
-		expiring
+		expiring,
+		houseEvents,
+		relations,
+		sceneSummaries
 	};
 };

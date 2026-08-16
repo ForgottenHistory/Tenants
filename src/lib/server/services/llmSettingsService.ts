@@ -21,6 +21,11 @@ class LlmSettingsService {
 	getDefaultSettings(): LlmSettingsData {
 		return llmSettingsFileService.getDefaultSettings('chat');
 	}
+
+	/** Pick the model for one request — see `llmSettingsFileService.resolveModel`. */
+	resolveModel(settings: { model: string; models?: string[] }): string {
+		return llmSettingsFileService.resolveModel(settings);
+	}
 }
 
 export const llmSettingsService = new LlmSettingsService();

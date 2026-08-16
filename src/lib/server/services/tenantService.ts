@@ -3,6 +3,7 @@ import { tenants, applicants, bedrooms, characters, houses, occupancy, scenes } 
 import { eq, and, notInArray, inArray, gte, or } from 'drizzle-orm';
 import type { Tenant, Applicant, Bedroom, Character } from '../db/schema';
 import { DEFAULT_LEASE_DAYS, APPLICANTS_PER_VACANCY, SATISFACTION } from '$lib/house/tenancy';
+import { relationService } from './relationService';
 
 /** A tenancy joined with the character it belongs to — what the UI actually needs. */
 export interface TenantWithCharacter {
@@ -297,7 +298,7 @@ class TenantService {
 			.limit(1);
 		if (existing) throw new Error('That character already lives here');
 
-		return db.transaction((tx) => {
+		const tenant = db.transaction((tx) => {
 			const [tenant] = tx
 				.insert(tenants)
 				.values({
@@ -341,6 +342,26 @@ class TenantService {
 
 			return tenant;
 		});
+
+		// Logged after the transaction commits: an event for a move-in that failed
+		// to write would be a lie in the house's history.
+		const [who] = await db
+			.select({ name: characters.name })
+			.from(characters)
+			.where(eq(characters.id, applicant.characterId))
+			.limit(1);
+
+		await relationService.recordTenancyEvent(
+			houseId,
+			house.day,
+			house.phase,
+			'move_in',
+			applicant.characterId,
+			who?.name ?? 'Someone',
+			room.name
+		);
+
+		return tenant;
 	}
 
 	async rejectApplicant(applicantId: number, houseId: number): Promise<boolean> {
@@ -359,6 +380,22 @@ class TenantService {
 
 	/** End a tenancy. The room becomes vacant; history is kept. */
 	async moveOut(tenantId: number, houseId: number, day: number): Promise<boolean> {
+		// Read who and where BEFORE the update: it nulls `bedroomId`, so the room
+		// they are leaving is unrecoverable afterwards.
+		const [leaving] = await db
+			.select({
+				characterId: tenants.characterId,
+				name: characters.name,
+				roomName: bedrooms.name,
+				phase: houses.phase
+			})
+			.from(tenants)
+			.innerJoin(characters, eq(tenants.characterId, characters.id))
+			.innerJoin(houses, eq(tenants.houseId, houses.id))
+			.leftJoin(bedrooms, eq(tenants.bedroomId, bedrooms.id))
+			.where(and(eq(tenants.id, tenantId), eq(tenants.houseId, houseId)))
+			.limit(1);
+
 		const result = await db
 			.update(tenants)
 			.set({ status: 'moved_out', moveOutDay: day, bedroomId: null })
@@ -372,6 +409,18 @@ class TenantService {
 		await db
 			.delete(occupancy)
 			.where(and(eq(occupancy.tenantId, tenantId), gte(occupancy.day, day)));
+
+		if (leaving) {
+			await relationService.recordTenancyEvent(
+				houseId,
+				day,
+				leaving.phase,
+				'move_out',
+				leaving.characterId,
+				leaving.name,
+				leaving.roomName
+			);
+		}
 
 		return true;
 	}
@@ -437,6 +486,16 @@ class TenantService {
 				createdAt: new Date()
 			})
 			.returning();
+
+		await relationService.recordTenancyEvent(
+			houseId,
+			house.day,
+			house.phase,
+			'move_in',
+			characterId,
+			character.name,
+			room.name
+		);
 
 		return tenant;
 	}

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { PageData } from './$types';
 	import MainLayout from '$lib/components/MainLayout.svelte';
+	import { EVENT_RECALL_DAYS_DEFAULT, EVENT_RECALL_DAYS_MAX } from '$lib/house/relations';
 
 	let { data }: { data: PageData } = $props();
 
@@ -15,6 +16,9 @@
 	let randomNarrationMaxMessages = $state(8);
 	let worldSidebarEnabled = $state(false);
 	let sceneRecallPercent = $state(15);
+	let eventRecallDays = $state(EVENT_RECALL_DAYS_DEFAULT);
+	let houseDriftPercent = $state(25);
+	let houseEventPercent = $state(28);
 	let autoWorldStateEnabled = $state(false);
 	let autoWorldStateMinMessages = $state(5);
 	let autoWorldStateMaxMessages = $state(12);
@@ -58,6 +62,9 @@
 				randomNarrationMaxMessages = data.randomNarrationMaxMessages ?? 8;
 				worldSidebarEnabled = data.worldSidebarEnabled ?? false;
 				sceneRecallPercent = data.sceneRecallPercent ?? 15;
+				eventRecallDays = data.eventRecallDays ?? EVENT_RECALL_DAYS_DEFAULT;
+				houseDriftPercent = data.houseDriftPercent ?? 25;
+				houseEventPercent = data.houseEventPercent ?? 28;
 				autoWorldStateEnabled = data.autoWorldStateEnabled ?? false;
 				autoWorldStateMinMessages = data.autoWorldStateMinMessages ?? 5;
 				autoWorldStateMaxMessages = data.autoWorldStateMaxMessages ?? 12;
@@ -84,7 +91,7 @@
 				fetch('/api/settings', {
 					method: 'PUT',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor })
+					body: JSON.stringify({ chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor })
 				}),
 				fetch('/api/writing-style', {
 					method: 'PUT',
@@ -96,7 +103,7 @@
 			if (settingsRes.ok && writingStyleRes.ok) {
 				message = { type: 'success', text: 'Settings saved successfully!' };
 				// Dispatch event so chat components can react
-				window.dispatchEvent(new CustomEvent('settingsUpdated', { detail: { chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor } }));
+				window.dispatchEvent(new CustomEvent('settingsUpdated', { detail: { chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor } }));
 			} else {
 				const data = await settingsRes.json();
 				message = { type: 'error', text: data.error || 'Failed to save settings' };
@@ -519,6 +526,142 @@
 									{:else if sceneRecallPercent >= 60}
 										<p class="text-xs text-[var(--warning)] mt-2">
 											Leaves little room for the character card and the conversation itself.
+										</p>
+									{/if}
+								</div>
+
+								<!-- House events: measured in days, not scenes, because this is
+								     "what the household is aware of" rather than a transcript -->
+								<div class="p-4 rounded-xl border border-[var(--border-primary)]">
+									<div class="flex items-center justify-between gap-4 mb-2">
+										<div>
+											<p class="font-medium text-[var(--text-primary)]">House events</p>
+											<p class="text-sm text-[var(--text-muted)] mt-1">
+												How far back tenants remember what happened around the house — who
+												moved in, who ate whose leftovers.
+											</p>
+										</div>
+										<span
+											class="text-lg font-semibold text-[var(--accent-primary)] tabular-nums flex-shrink-0"
+										>
+											{eventRecallDays === 0
+												? 'Off'
+												: `${eventRecallDays} ${eventRecallDays === 1 ? 'day' : 'days'}`}
+										</span>
+									</div>
+									<input
+										type="range"
+										min="0"
+										max={EVENT_RECALL_DAYS_MAX}
+										step="1"
+										bind:value={eventRecallDays}
+										aria-label="How many days of house events characters are told about"
+										class="w-full accent-[var(--accent-primary)]"
+									/>
+									<div class="flex justify-between text-xs text-[var(--text-muted)] mt-1">
+										<span>Off</span>
+										<span>{EVENT_RECALL_DAYS_MAX} days</span>
+									</div>
+									{#if eventRecallDays === 0}
+										<p class="text-xs text-[var(--warning)] mt-2">
+											Tenants won't mention anything that happened while you were away.
+										</p>
+									{:else if eventRecallDays >= 10}
+										<p class="text-xs text-[var(--warning)] mt-2">
+											A busy house generates several events a day — a long window is a lot of
+											prompt on every message.
+										</p>
+									{/if}
+								</div>
+							</div>
+						</div>
+
+						<!-- House Simulation Section -->
+						<div>
+							<h2 class="text-lg font-semibold text-[var(--text-primary)] mb-4">
+								House Simulation
+							</h2>
+							<p class="text-sm text-[var(--text-muted)] mb-4">
+								How much happens in the house on its own, between the scenes you play
+							</p>
+
+							<div class="space-y-4">
+								<div class="p-4 rounded-xl border border-[var(--border-primary)]">
+									<div class="flex items-center justify-between gap-4 mb-2">
+										<div>
+											<p class="font-medium text-[var(--text-primary)]">Things go wrong</p>
+											<p class="text-sm text-[var(--text-muted)] mt-1">
+												Chance each day that a tenant finds something to complain about — a
+												dripping tap, a cold shower. Raises a request you can settle.
+											</p>
+										</div>
+										<span
+											class="text-lg font-semibold text-[var(--accent-primary)] tabular-nums flex-shrink-0"
+										>
+											{houseDriftPercent === 0 ? 'Off' : `${houseDriftPercent}%`}
+										</span>
+									</div>
+									<input
+										type="range"
+										min="0"
+										max="100"
+										step="5"
+										bind:value={houseDriftPercent}
+										aria-label="Daily chance a tenant raises a complaint"
+										class="w-full accent-[var(--accent-primary)]"
+									/>
+									<div class="flex justify-between text-xs text-[var(--text-muted)] mt-1">
+										<span>Never</span>
+										<span>Every day</span>
+									</div>
+									{#if houseDriftPercent === 0}
+										<p class="text-xs text-[var(--warning)] mt-2">
+											Nothing will ever break. Satisfaction only moves through scenes and
+											promises.
+										</p>
+									{:else if houseDriftPercent >= 60}
+										<p class="text-xs text-[var(--warning)] mt-2">
+											Tenants will raise complaints faster than you can settle them.
+										</p>
+									{/if}
+								</div>
+
+								<div class="p-4 rounded-xl border border-[var(--border-primary)]">
+									<div class="flex items-center justify-between gap-4 mb-2">
+										<div>
+											<p class="font-medium text-[var(--text-primary)]">Housemate events</p>
+											<p class="text-sm text-[var(--text-muted)] mt-1">
+												Chance each phase that two tenants have a moment off-screen — made
+												coffee, ate the leftovers. Moves how they feel about each other.
+											</p>
+										</div>
+										<span
+											class="text-lg font-semibold text-[var(--accent-primary)] tabular-nums flex-shrink-0"
+										>
+											{houseEventPercent === 0 ? 'Off' : `${houseEventPercent}%`}
+										</span>
+									</div>
+									<input
+										type="range"
+										min="0"
+										max="100"
+										step="5"
+										bind:value={houseEventPercent}
+										aria-label="Chance per phase of an event between two housemates"
+										class="w-full accent-[var(--accent-primary)]"
+									/>
+									<div class="flex justify-between text-xs text-[var(--text-muted)] mt-1">
+										<span>Never</span>
+										<span>Every phase</span>
+									</div>
+									{#if houseEventPercent === 0}
+										<p class="text-xs text-[var(--warning)] mt-2">
+											Tenants will never form opinions of each other on their own.
+										</p>
+									{:else if houseEventPercent >= 70}
+										<p class="text-xs text-[var(--warning)] mt-2">
+											Expect several events every phase — the house will feel like a soap
+											opera.
 										</p>
 									{/if}
 								</div>

@@ -1,6 +1,6 @@
 import { db } from '../db';
 import { occupancy, tenants, bedrooms, sharedSpaces, characters } from '../db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and, inArray, gte, lte } from 'drizzle-orm';
 import type { Occupancy, Bedroom, SharedSpace, Character, Tenant } from '../db/schema';
 import { PHASE_PLACEMENT_WEIGHTS, phaseId } from '$lib/house/phases';
 import {
@@ -199,6 +199,69 @@ class OccupancyService {
 		}
 
 		return this.getForPhase(houseId, day, phase);
+	}
+
+	/**
+	 * What these characters have been doing over the last few days.
+	 *
+	 * `occupancy` is an append-only log, so a tenant's own recent history is
+	 * already sitting there — a character otherwise knows what they are doing
+	 * *right now* and nothing about their own week, which makes "what have you
+	 * been up to?" unanswerable.
+	 *
+	 * Keyed by character rather than tenant so the caller doesn't have to map
+	 * back, and scoped to the days requested. The current phase is excluded by
+	 * the caller passing `beforeDay`/`beforePhase` — a character doesn't need to
+	 * be told what they are doing at this exact moment, since the scene already
+	 * says so.
+	 */
+	async getRecentFor(
+		houseId: number,
+		characterIds: number[],
+		fromDay: number,
+		toDay: number
+	): Promise<Map<number, Array<{ day: number; phase: number; place: string; activity: string | null }>>> {
+		const result = new Map<
+			number,
+			Array<{ day: number; phase: number; place: string; activity: string | null }>
+		>();
+		if (characterIds.length === 0) return result;
+
+		const rows = await db
+			.select({
+				characterId: tenants.characterId,
+				day: occupancy.day,
+				phase: occupancy.phase,
+				placeKind: occupancy.placeKind,
+				activity: occupancy.activity,
+				bedroomName: bedrooms.name,
+				spaceName: sharedSpaces.name
+			})
+			.from(occupancy)
+			.innerJoin(tenants, eq(occupancy.tenantId, tenants.id))
+			.leftJoin(bedrooms, eq(occupancy.bedroomId, bedrooms.id))
+			.leftJoin(sharedSpaces, eq(occupancy.sharedSpaceId, sharedSpaces.id))
+			.where(
+				and(
+					eq(occupancy.houseId, houseId),
+					inArray(tenants.characterId, characterIds),
+					gte(occupancy.day, fromDay),
+					lte(occupancy.day, toDay)
+				)
+			)
+			.orderBy(occupancy.day, occupancy.phase);
+
+		for (const row of rows) {
+			const place =
+				row.placeKind === 'away'
+					? 'out'
+					: (row.bedroomName ?? row.spaceName ?? 'the house');
+			const list = result.get(row.characterId) ?? [];
+			list.push({ day: row.day, phase: row.phase, place, activity: row.activity });
+			result.set(row.characterId, list);
+		}
+
+		return result;
 	}
 }
 

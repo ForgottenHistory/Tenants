@@ -155,7 +155,7 @@ function parseActivityYaml(raw: string): Record<string, Record<string, string[]>
 	return out;
 }
 
-export type ContentType = 'description' | 'personality' | 'scenario' | 'message_example' | 'greeting' | 'scenario_greeting' | 'scene_summary' | 'activity_pools' | 'space_activities';
+export type ContentType = 'description' | 'personality' | 'personality_generate' | 'scenario' | 'message_example' | 'greeting' | 'scenario_greeting' | 'scene_summary' | 'activity_pools' | 'space_activities';
 
 class ContentLlmService {
 	/**
@@ -364,6 +364,47 @@ class ContentLlmService {
 		return Object.values(parsed)
 			.flatMap((section) => Object.values(section).flat())
 			.filter(Boolean);
+	}
+
+	/**
+	 * Write a character's profile from scratch, out of their description.
+	 *
+	 * Distinct from rewriting `personality`: this reads the DESCRIPTION and always
+	 * builds fresh, so it works on the common case of a card that never had a
+	 * personality at all — rewriting has nothing to chew on there. Whatever is in
+	 * the field is ignored and replaced.
+	 *
+	 * Covers **appearance and manner**, because the house layer repeats this for
+	 * every resident in every scene prompt: a housemate knows what the others look
+	 * like as well as what they are like to live with. Two short paragraphs rather
+	 * than the whole card — the source description is often thousands of tokens,
+	 * and this is what someone would know about a person they live with, not
+	 * everything ever written about them.
+	 */
+	async generatePersonality({
+		characterName,
+		description
+	}: {
+		characterName: string;
+		description: string;
+	}): Promise<string> {
+		console.log(`📝 Content LLM writing personality for ${characterName}...`);
+
+		const settings = contentLlmSettingsService.getSettings();
+		const promptTemplate = await this.loadPrompt('personality_generate');
+
+		const prompt = promptTemplate
+			.replace(/\{\{char\}\}/gi, characterName)
+			.replace(/\{\{input\}\}/gi, description);
+
+		const response = await this.callContentLLM({
+			messages: [{ role: 'user', content: prompt }],
+			settings,
+			contentType: 'personality_generate'
+		});
+
+		console.log(`📝 Content LLM finished writing personality`);
+		return response.trim();
 	}
 
 	/**

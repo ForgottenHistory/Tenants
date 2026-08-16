@@ -15,7 +15,23 @@ if (!existsSync(DATA_DIR)) {
  */
 export interface LlmSettingsData {
 	provider: string;
+	/**
+	 * The single selected model, and the fallback when `models` is empty.
+	 *
+	 * Kept alongside `models` rather than replaced by it: every settings file
+	 * written before multi-model existed has this field and no array, and a
+	 * migration that rewrote them would be a lot of risk for a field that works
+	 * perfectly well as "the default".
+	 */
 	model: string;
+	/**
+	 * Optional pool to draw from at random, one pick per request.
+	 *
+	 * Empty or absent means "just use `model`". Two or more entries makes each
+	 * request roll — useful for varying prose voice across a long roleplay, or
+	 * spreading load across providers' rate limits.
+	 */
+	models?: string[];
 	temperature: number;
 	maxTokens: number;
 	topP: number;
@@ -155,6 +171,22 @@ class LlmSettingsFileService {
 	getSettings(type: keyof AllLlmSettings): LlmSettingsData {
 		const all = this.getAllSettings();
 		return all[type];
+	}
+
+	/**
+	 * Which model to actually use for one request.
+	 *
+	 * Rolls fresh per call when a pool is configured, so a long conversation is
+	 * spread across the pool rather than pinned to whichever model was picked
+	 * first. Falls back to `model` when the pool is empty, absent, or holds a
+	 * single entry — so settings written before multi-model existed behave
+	 * exactly as they always did.
+	 */
+	resolveModel(settings: { model: string; models?: string[] }): string {
+		const pool = (settings.models ?? []).filter((m) => typeof m === 'string' && m.trim());
+		if (pool.length === 0) return settings.model;
+		if (pool.length === 1) return pool[0];
+		return pool[Math.floor(Math.random() * pool.length)];
 	}
 
 	/**

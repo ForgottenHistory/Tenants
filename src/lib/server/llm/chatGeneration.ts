@@ -5,7 +5,7 @@ import { lorebookService } from '../services/lorebookService';
 import { worldInfoService } from '../services/worldInfoService';
 import { logger } from '../utils/logger';
 import type { Message, Character, LlmSettings } from '../db/schema';
-import type { LlmSettingsData } from '../services/llmSettingsFileService';
+import { llmSettingsFileService, type LlmSettingsData } from '../services/llmSettingsFileService';
 import {
 	loadSystemPromptFromFile,
 	loadWritingStyle,
@@ -58,6 +58,11 @@ export async function generateChatCompletion(
 	// Get active user info (persona or default profile)
 	const userInfo = await personaService.getActiveUserInfo(effectiveUserId);
 	const userName = userInfo.name;
+	// Who the player is, from the active persona or their profile bio. The
+	// character is talking TO this person, so it belongs in the prompt just as
+	// much as the character's own description — `narration.ts` has always passed
+	// it, and the chat prompt simply never did.
+	const userDescription = userInfo.description || '';
 
 	// Load system prompt from file
 	const basePrompt = await loadSystemPromptFromFile();
@@ -107,6 +112,7 @@ export async function generateChatCompletion(
 	const templateVariables = {
 		char: character.name || 'Character',
 		user: userName,
+		user_description: userDescription,
 		personality: characterData.personality || '',
 		scenario: scenarioOverride || characterData.scenario || '',
 		description: character.description || characterData.description || '',
@@ -125,10 +131,20 @@ export async function generateChatCompletion(
 	// Replace history variable
 	systemPrompt = systemPrompt.replace(/\{\{history\}\}/g, historyText);
 
-	// Add example dialogues if present (after template)
-	let finalSystemPrompt = systemPrompt;
-	if (characterData.mes_example) {
-		finalSystemPrompt += `\n\nExample Dialogue:\n${characterData.mes_example}`;
+	// Example dialogue belongs with the character definition, not after the
+	// conversation: it shows how {{char}} speaks, so it has to be read before the
+	// history it is meant to shape. The template positions it via
+	// {{example_dialogue}}; appending only happens as a fallback for a prompt
+	// that has no placeholder, which would otherwise drop it silently.
+	const exampleBlock = characterData.mes_example
+		? `Example Dialogue:\n${characterData.mes_example}`
+		: '';
+
+	let finalSystemPrompt: string;
+	if (basePrompt.includes('{{example_dialogue}}')) {
+		finalSystemPrompt = systemPrompt.replace(/\{\{example_dialogue\}\}/g, exampleBlock);
+	} else {
+		finalSystemPrompt = exampleBlock ? `${systemPrompt}\n\n${exampleBlock}` : systemPrompt;
 	}
 
 	// Add custom system prompt if present (after everything)
@@ -162,10 +178,14 @@ export async function generateChatCompletion(
 		userName
 	);
 
+	// Drawn once per request: with a model pool configured this varies, so the
+	// log and the request must agree on which one was actually used.
+	const requestModel = llmSettingsFileService.resolveModel(settings as LlmSettingsData);
+
 	logger.info(`Generating ${messageType} completion`, {
 		character: character.name,
 		user: userName,
-		model: settings.model,
+		model: requestModel,
 		messageCount: formattedMessages.length
 	});
 
@@ -173,7 +193,7 @@ export async function generateChatCompletion(
 	const response = await llmService.createChatCompletion({
 		messages: formattedMessages,
 		userId: effectiveUserId,
-		model: settings.model,
+		model: requestModel,
 		temperature: settings.temperature,
 		maxTokens: settings.maxTokens
 	});

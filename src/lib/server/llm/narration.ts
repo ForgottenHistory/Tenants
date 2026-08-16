@@ -9,7 +9,7 @@ import { db } from '../db';
 import { messages, conversations } from '../db/schema';
 import { eq, desc } from 'drizzle-orm';
 import type { Message, Character, LlmSettings } from '../db/schema';
-import type { LlmSettingsData } from '../services/llmSettingsFileService';
+import { llmSettingsFileService, type LlmSettingsData } from '../services/llmSettingsFileService';
 import {
 	loadNarrationPromptFromFile,
 	loadWritingStyle,
@@ -165,10 +165,12 @@ export async function generateNarration(
 		userName
 	);
 
+	const requestModel = llmSettingsFileService.resolveModel(settings as LlmSettingsData);
+
 	logger.info(`Generating narration (${narrateType})`, {
 		character: character.name,
 		user: userName,
-		model: settings.model,
+		model: requestModel,
 		messageCount: formattedMessages.length
 	});
 
@@ -176,7 +178,7 @@ export async function generateNarration(
 	const response = await llmService.createChatCompletion({
 		messages: formattedMessages,
 		userId: effectiveUserId,
-		model: settings.model,
+		model: requestModel,
 		temperature: settings.temperature,
 		maxTokens: settings.maxTokens
 	});
@@ -315,9 +317,11 @@ export async function generateSceneNarration(
 		userName
 	);
 
+	const sceneRequestModel = llmSettingsFileService.resolveModel(settings as LlmSettingsData);
+
 	logger.info(`Generating scene narration (${narrateType})`, {
 		user: userName,
-		model: settings.model,
+		model: sceneRequestModel,
 		activeCharacters: characterNames
 	});
 
@@ -325,7 +329,7 @@ export async function generateSceneNarration(
 	const response = await llmService.createChatCompletion({
 		messages: formattedMessages,
 		userId,
-		model: settings.model,
+		model: sceneRequestModel,
 		temperature: settings.temperature,
 		maxTokens: settings.maxTokens
 	});

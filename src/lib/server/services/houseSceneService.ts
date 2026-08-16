@@ -17,13 +17,16 @@ import {
 import { eq, and, isNull, isNotNull, inArray, desc } from 'drizzle-orm';
 import type { House, Bedroom, SharedSpace, Scene, Character, Tenant, Occupancy } from '../db/schema';
 import { phaseLabel, weekdayLabel } from '$lib/house/phases';
-import { estimateTokens } from '$lib/house/tenancy';
+import { estimateTokens, satisfactionMood } from '$lib/house/tenancy';
 import { llmSettingsFileService } from './llmSettingsFileService';
 import { sceneService } from './sceneService';
 import { personaService } from './personaService';
 import { generateSceneNarration } from '../llm';
 import { contentLlmService } from './contentLlmService';
 import { satisfactionService } from './satisfactionService';
+import { relationService } from './relationService';
+import { occupancyService } from './occupancyService';
+import { relationLabel, EVENT_RECALL_DAYS_DEFAULT } from '$lib/house/relations';
 
 /** Room scenes take a place; an interview takes an applicant. */
 export type PlaceKind = 'bedroom' | 'shared' | 'interview';
@@ -116,7 +119,9 @@ class HouseSceneService {
 			openedDay: number;
 			dueDay: number | null;
 			characterName: string;
-		}> = []
+		}> = [],
+		layout: string = '',
+		routines: Array<{ name: string; summary: string }> = []
 	): string {
 		const lines: string[] = [];
 
@@ -139,6 +144,12 @@ class HouseSceneService {
 				: `The ${placeName} is a shared space — anyone living here may walk in.`
 		);
 
+		// The rest of the house, before the people in this room: a resident knows
+		// the layout and their housemates whether or not anyone else is present.
+		if (layout) {
+			lines.push(layout);
+		}
+
 		if (present.length === 0) {
 			lines.push('Nobody is here right now.');
 		} else {
@@ -147,10 +158,27 @@ class HouseSceneService {
 			for (const p of present) {
 				const room = p.occupancy.activity ? ` — currently ${p.occupancy.activity}` : '';
 				const remaining = Math.max(0, p.tenant.leaseEndDay - house.day);
+				// How they feel about living here, in words rather than a number. A
+				// character who is quietly miserable should sound like it, and should
+				// be able to answer when the landlord asks how things are — without
+				// this they cheerfully deny problems the game says they have.
+				const mood = satisfactionMood(p.tenant.satisfaction);
 				lines.push(
 					`- ${p.character.name}${room}. Pays $${p.tenant.rentAmount.toLocaleString()} per period; ` +
-						`${remaining} day${remaining === 1 ? '' : 's'} left on the lease.`
+						`${remaining} day${remaining === 1 ? '' : 's'} left on the lease. ${mood}`
 				);
+			}
+		}
+
+		// What the people in the room have actually been doing with their days.
+		// `occupancy` records this per phase, and without it a character knows
+		// what they are doing right now and nothing about their own week — so
+		// "what have you been up to?" has no answer.
+		if (routines.length > 0) {
+			lines.push('');
+			lines.push('Their last few days:');
+			for (const entry of routines) {
+				lines.push(`- ${entry.name}: ${entry.summary}`);
 			}
 		}
 
@@ -280,6 +308,12 @@ class HouseSceneService {
 				houseId,
 				present.map((p) => p.character.id)
 			);
+			const layout = await this.buildLayoutContext(
+				houseId,
+				present.map((p) => p.character.id),
+				{ currentDay: house.day, userId }
+			);
+			const routines = await this.buildRoutines(houseId, present, house);
 			await db
 				.update(conversations)
 				.set({
@@ -291,7 +325,9 @@ class HouseSceneService {
 						present,
 						userInfo.name,
 						recall,
-						open
+						open,
+						layout,
+						routines
 					)
 				})
 				.where(eq(conversations.id, existing.conversationId));
@@ -317,6 +353,12 @@ class HouseSceneService {
 			houseId,
 			present.map((p) => p.character.id)
 		);
+		const layout = await this.buildLayoutContext(
+			houseId,
+			present.map((p) => p.character.id),
+			{ currentDay: house.day, userId }
+		);
+		const routines = await this.buildRoutines(houseId, present, house);
 		const houseContext = this.buildHouseContext(
 			house,
 			placeName,
@@ -325,7 +367,9 @@ class HouseSceneService {
 			present,
 			userInfo.name,
 			recall,
-			open
+			open,
+			layout,
+			routines
 		);
 
 		// The first person present anchors the scene; the chat engine uses
@@ -736,6 +780,138 @@ class HouseSceneService {
 	}
 
 	/**
+	 * A short account of what each person present has been doing lately.
+	 *
+	 * Rendered per day rather than per phase — four lines a day per character
+	 * would bury everything else in the prompt, and "Tuesday: out most of the
+	 * day, back in the kitchen by evening" is what someone would actually say if
+	 * asked. Today is included up to (but not including) the current phase, since
+	 * the scene already states what they are doing right now.
+	 *
+	 * Returns an empty array when there is no history — a house on day 1 has
+	 * nothing to report, and an empty heading reads worse than none.
+	 */
+	async buildRoutines(
+		houseId: number,
+		present: ScenePresence[],
+		house: House,
+		daysBack = 3
+	): Promise<Array<{ name: string; summary: string }>> {
+		if (present.length === 0 || daysBack <= 0) return [];
+
+		const fromDay = Math.max(1, house.day - daysBack);
+		const toDay = house.day;
+		const characterIds = present.map((p) => p.character.id);
+
+		const history = await occupancyService.getRecentFor(houseId, characterIds, fromDay, toDay);
+
+		const out: Array<{ name: string; summary: string }> = [];
+
+		for (const person of present) {
+			const rows = (history.get(person.character.id) ?? []).filter(
+				// Drop the current phase: the scene already says where they are.
+				(r) => !(r.day === house.day && r.phase >= house.phase)
+			);
+			if (rows.length === 0) continue;
+
+			// Group by day, newest last so it reads forward as a week.
+			const byDay = new Map<number, typeof rows>();
+			for (const row of rows) {
+				const list = byDay.get(row.day) ?? [];
+				list.push(row);
+				byDay.set(row.day, list);
+			}
+
+			const dayParts: string[] = [];
+			for (const [day, entries] of [...byDay.entries()].sort((a, b) => a[0] - b[0])) {
+				// One phrase per phase, but only where something is worth saying —
+				// four "in their room" in a row is noise, so consecutive repeats of
+				// the same place collapse.
+				const phrases: string[] = [];
+				let lastPlace: string | null = null;
+				for (const entry of entries) {
+					const what = entry.activity ?? (entry.place === 'out' ? 'out' : `in ${entry.place}`);
+					const where = entry.place === 'out' ? 'out' : entry.place;
+					if (where === lastPlace) continue;
+					lastPlace = where;
+					phrases.push(`${phaseLabel(entry.phase).toLowerCase()} ${what}`);
+				}
+				if (phrases.length > 0) {
+					const label = day === house.day ? 'today' : weekdayLabel(day).toLowerCase();
+					dayParts.push(`${label} ${phrases.join(', ')}`);
+				}
+			}
+
+			if (dayParts.length > 0) {
+				out.push({ name: person.character.name, summary: dayParts.join('; ') + '.' });
+			}
+		}
+
+		return out;
+	}
+
+	/**
+	 * Summarised scenes for the house, newest first — what the player can read
+	 * back as "what happened in that room".
+	 *
+	 * Only scenes with a summary: an unsummarised one is either still in the
+	 * current phase or had nothing worth condensing, and neither is worth showing
+	 * as a memory. Includes `conversationId` so a row can link back to the actual
+	 * transcript.
+	 */
+	async getSummarisedScenes(houseId: number, limit = 100) {
+		const rows = await db
+			.select({
+				scene: scenes,
+				bedroomName: bedrooms.name,
+				spaceName: sharedSpaces.name
+			})
+			.from(scenes)
+			.leftJoin(bedrooms, eq(scenes.bedroomId, bedrooms.id))
+			.leftJoin(sharedSpaces, eq(scenes.sharedSpaceId, sharedSpaces.id))
+			.where(and(eq(scenes.houseId, houseId), isNotNull(scenes.summary)))
+			.orderBy(desc(scenes.day), desc(scenes.phase), desc(scenes.id))
+			.limit(limit);
+
+		if (rows.length === 0) return [];
+
+		// Who was in each, so a summary reads as "you and Zara" rather than a
+		// disembodied paragraph. One query for all of them rather than per scene.
+		const conversationIds = rows.map((r) => r.scene.conversationId);
+		const cast = await db
+			.select({
+				conversationId: sceneParticipants.conversationId,
+				name: characters.name,
+				characterId: characters.id
+			})
+			.from(sceneParticipants)
+			.innerJoin(characters, eq(sceneParticipants.characterId, characters.id))
+			.where(inArray(sceneParticipants.conversationId, conversationIds));
+
+		const castByConversation = new Map<number, Array<{ id: number; name: string }>>();
+		for (const c of cast) {
+			const list = castByConversation.get(c.conversationId) ?? [];
+			list.push({ id: c.characterId, name: c.name });
+			castByConversation.set(c.conversationId, list);
+		}
+
+		return rows.map((row) => ({
+			id: row.scene.id,
+			conversationId: row.scene.conversationId,
+			day: row.scene.day,
+			phase: row.scene.phase,
+			placeKind: row.scene.placeKind,
+			place:
+				row.scene.placeKind === 'interview'
+					? 'Interview'
+					: (row.bedroomName ?? row.spaceName ?? 'the house'),
+			summary: row.scene.summary!,
+			summarisedAt: row.scene.summarisedAt,
+			participants: castByConversation.get(row.scene.conversationId) ?? []
+		}));
+	}
+
+	/**
 	 * Open (or resume) an interview with an applicant.
 	 *
 	 * An interview is a scene keyed to an applicant rather than a room — you are
@@ -784,13 +960,18 @@ class HouseSceneService {
 		}
 
 		const userInfo = await personaService.getActiveUserInfo(userId);
+		// Rooms only. An applicant standing at the door has seen the listing, not
+		// met the tenants — handing them everyone's personality would have them
+		// greeting housemates they have never laid eyes on.
+		const layout = await this.buildLayoutContext(houseId, [], { roomsOnly: true });
 		const context = this.buildInterviewContext(
 			house,
 			row.character.name,
 			row.room.name,
 			row.applicant.askingRent,
 			row.applicant.requestedDays,
-			userInfo.name
+			userInfo.name,
+			layout
 		);
 
 		const [conversation] = await db
@@ -857,11 +1038,13 @@ class HouseSceneService {
 		roomName: string,
 		askingRent: number,
 		requestedDays: number,
-		userName: string
+		userName: string,
+		layout: string = ''
 	): string {
 		const where = house.address ? `${house.name} (${house.address})` : house.name;
 		return [
 			`${where}. ${weekdayLabel(house.day)}, day ${house.day}, ${phaseLabel(house.phase)}.`,
+			layout,
 			'',
 			// Explicit about who arrives: the scene-intro prompt otherwise assumes
 			// the player walked in, which is backwards for an interview.
@@ -878,6 +1061,156 @@ class HouseSceneService {
 			`Nothing is settled here: ${userName} decides afterwards whether to offer the ` +
 				`lease. Do not narrate them moving in or being accepted.`
 		].join('\n');
+	}
+
+	/**
+	 * The house as its residents know it: every room, and who lives in each.
+	 *
+	 * Without this a tenant standing in the kitchen has no idea the house has a
+	 * yard, how many bedrooms there are, or who their housemates are unless those
+	 * people happen to be in the room — so they can neither mention a room by name
+	 * nor refer to anyone they live with.
+	 *
+	 * Housemates carry their card `personality` rather than `description` — the
+	 * full background is a whole card's worth of text per resident, while
+	 * `personality` is the profile the Generate button writes: what they look like
+	 * and what they are like to live with, which is exactly what a housemate would
+	 * know. `excludeCharacterIds` drops the people already listed under "Present:"
+	 * with richer detail, so nobody is described twice.
+	 *
+	 * `roomsOnly` returns the layout without the housemate write-ups, for
+	 * interviews: an applicant knows what the house contains from the listing,
+	 * but has not met anyone living in it.
+	 */
+	async buildLayoutContext(
+		houseId: number,
+		excludeCharacterIds: number[] = [],
+		options: { roomsOnly?: boolean; currentDay?: number; userId?: number } = {}
+	): Promise<string> {
+		const [rooms, spaces, residents] = await Promise.all([
+			db
+				.select({ id: bedrooms.id, name: bedrooms.name })
+				.from(bedrooms)
+				.where(eq(bedrooms.houseId, houseId))
+				.orderBy(bedrooms.sortOrder),
+			db
+				.select({ name: sharedSpaces.name })
+				.from(sharedSpaces)
+				.where(and(eq(sharedSpaces.houseId, houseId), eq(sharedSpaces.unlocked, true)))
+				.orderBy(sharedSpaces.sortOrder),
+			db
+				.select({
+					characterId: characters.id,
+					name: characters.name,
+					cardData: characters.cardData,
+					bedroomId: tenants.bedroomId
+				})
+				.from(tenants)
+				.innerJoin(characters, eq(tenants.characterId, characters.id))
+				.where(and(eq(tenants.houseId, houseId), eq(tenants.status, 'active')))
+		]);
+
+		const lines: string[] = [];
+
+		if (rooms.length > 0 || spaces.length > 0) {
+			const parts: string[] = [];
+			if (rooms.length > 0) {
+				// Name the occupant inline: "who lives where" is the fact a housemate
+				// actually uses, and a bare room list invites inventing tenants. An
+				// applicant gets only the room names — who lives in which room is not
+				// on the listing.
+				parts.push(
+					'Bedrooms: ' +
+						rooms
+							.map((r) => {
+								if (options.roomsOnly) return r.name;
+								const who = residents.find((t) => t.bedroomId === r.id);
+								return who ? `${r.name} (${who.name})` : `${r.name} (empty)`;
+							})
+							.join(', ')
+				);
+			}
+			if (spaces.length > 0) {
+				parts.push('Shared: ' + spaces.map((s) => s.name).join(', '));
+			}
+			lines.push('');
+			lines.push('The house:');
+			for (const p of parts) lines.push(`- ${p}`);
+		}
+
+		const others = options.roomsOnly
+			? []
+			: residents.filter((r) => !excludeCharacterIds.includes(r.characterId));
+		if (others.length > 0) {
+			lines.push('');
+			lines.push('Also living here (not in this room right now):');
+			for (const r of others) {
+				let personality = '';
+				try {
+					let card = JSON.parse(r.cardData);
+					if (card.data) card = card.data;
+					personality = (card.personality || '').trim();
+				} catch {
+					// A card that won't parse still gives us a name, which is the part
+					// that matters for knowing who lives here.
+				}
+				lines.push(personality ? `- ${r.name}: ${personality}` : `- ${r.name}`);
+			}
+		}
+
+		// How the residents get on. Placed after the roster so the names have been
+		// introduced first. Only pairs who have actually formed an opinion appear —
+		// a wall of "Neutral" is noise, and the absence of a line already means
+		// "no strong feelings either way".
+		if (!options.roomsOnly && residents.length > 1) {
+			const standing = await relationService.getHouseRelations(houseId);
+			const notable = standing.filter((r) => relationLabel(r.score) !== 'Neutral');
+			if (notable.length > 0) {
+				lines.push('');
+				lines.push('How they get on:');
+				for (const r of notable) {
+					lines.push(
+						`- ${r.characterAName} and ${r.characterBName}: ${relationLabel(r.score).toLowerCase()}`
+					);
+				}
+			}
+		}
+
+		// What has happened in the house lately. Everyone living here would know
+		// these — someone moved in, someone ate someone's leftovers — so they are
+		// fair game to mention, unlike scene recall which is scoped to who took
+		// part. Excluded from interviews: an applicant hasn't lived through any of
+		// it.
+		if (!options.roomsOnly && options.currentDay !== undefined) {
+			// How far back to reach is the player's call (General Settings → Scene
+			// Memory). 0 turns event recall off.
+			let daysBack = EVENT_RECALL_DAYS_DEFAULT;
+			if (options.userId !== undefined) {
+				const [user] = await db
+					.select({ days: users.eventRecallDays })
+					.from(users)
+					.where(eq(users.id, options.userId))
+					.limit(1);
+				if (user) daysBack = user.days;
+			}
+
+			const events = await relationService.recentForContext(
+				houseId,
+				options.currentDay,
+				daysBack
+			);
+			if (events.length > 0) {
+				lines.push('');
+				lines.push('Recently in the house:');
+				for (const e of events) {
+					lines.push(
+						`- ${weekdayLabel(e.day)} (day ${e.day}), ${phaseLabel(e.phase)}: ${e.text}`
+					);
+				}
+			}
+		}
+
+		return lines.join('\n');
 	}
 
 	/**
@@ -909,6 +1242,49 @@ class HouseSceneService {
 			dueDay: r.thread.dueDay,
 			characterName: r.characterName
 		}));
+	}
+
+	/**
+	 * Close a thread by hand, from the Needs You panel.
+	 *
+	 * The summariser closes threads when it notices the conversation settled
+	 * something, but it is a model reading prose — it misses things, and a
+	 * request you dealt with off-screen (you actually fixed the tap) never comes
+	 * up in a scene at all. Without a manual close those sit in the panel
+	 * forever, and a promise keeps charging its overdue penalty.
+	 *
+	 * `resolved` credits satisfaction exactly as an LLM-detected closure does;
+	 * `dropped` does not — deciding something no longer matters is not the same
+	 * as doing it.
+	 */
+	async closeThread(
+		threadId: number,
+		houseId: number,
+		day: number,
+		outcome: 'resolved' | 'dropped',
+		resolution?: string
+	): Promise<boolean> {
+		const [closed] = await db
+			.update(threads)
+			.set({
+				status: outcome,
+				resolvedDay: day,
+				resolution: resolution?.trim() || null
+			})
+			// Guarded on house AND still-open, so a stale click can't reopen-and-
+			// re-credit something already settled.
+			.where(
+				and(eq(threads.id, threadId), eq(threads.houseId, houseId), eq(threads.status, 'open'))
+			)
+			.returning();
+
+		if (!closed) return false;
+
+		if (outcome === 'resolved') {
+			await satisfactionService.creditResolvedThread(houseId, closed.characterId, closed.kind);
+		}
+
+		return true;
 	}
 
 	/**

@@ -7,6 +7,11 @@
 	// Spread across hues so several tenants in one room stay easy to tell apart
 	// at a glance, and kept clear of the amber accent so speaker names don't read
 	// as UI chrome.
+	//
+	// Characters who are only MENTIONED draw from the same palette: two different
+	// people sharing one colour defeats the point of colouring names at all. They
+	// are simply assigned after everyone in the room, so present speakers take the
+	// earlier, most distinct hues.
 	const CHARACTER_COLORS = [
 		'#8fb08a', // sage
 		'#d98a8a', // dusty rose
@@ -48,13 +53,21 @@
 		autoWrapActions?: boolean;
 		userBubbleColor?: string;
 		sceneCharacters?: { id: number; name: string }[];
+		/**
+		 * People who exist but are not in this scene — other tenants in the house.
+		 *
+		 * Highlighted when mentioned, so "Zara said she'd fix it" reads as a person
+		 * rather than a word, without them having to be in the room. Each gets its
+		 * own palette colour, assigned after everyone present.
+		 */
+		knownCharacters?: { id: number; name: string }[];
 		onSwipe: (messageId: number, direction: 'left' | 'right') => void;
 		onSaveEdit: (messageId: number, index: number, content: string) => void;
 		onDelete: (messageId: number, index: number) => void;
 		onBranch?: (messageId: number) => void;
 	}
 
-	let { messages, loading, isTyping, generating, charName, userName, charAvatar, userAvatar, chatLayout = 'bubbles', avatarStyle = 'circle', textCleanupEnabled = true, autoWrapActions = false, userBubbleColor = '#e0a458', sceneCharacters, onSwipe, onSaveEdit, onDelete, onBranch }: Props = $props();
+	let { messages, loading, isTyping, generating, charName, userName, charAvatar, userAvatar, chatLayout = 'bubbles', avatarStyle = 'circle', textCleanupEnabled = true, autoWrapActions = false, userBubbleColor = '#e0a458', sceneCharacters, knownCharacters, onSwipe, onSaveEdit, onDelete, onBranch }: Props = $props();
 
 	// Filter palette to exclude colors too similar to the user's bubble color.
 	// Must be declared AFTER $props(): a $derived that reads a prop before the
@@ -80,6 +93,18 @@
 		// Then, assign colors to scene characters who haven't spoken yet
 		if (sceneCharacters) {
 			for (const char of sceneCharacters) {
+				if (!map.has(char.id)) {
+					map.set(char.id, colors[colorIndex % colors.length]);
+					colorIndex++;
+				}
+			}
+		}
+		// Finally the rest of the house — people who get mentioned but aren't in
+		// this room. Last in line so the people actually here take the earlier
+		// hues, but they still get a colour of their own: two housemates sharing
+		// one is exactly what colouring names is supposed to prevent.
+		if (knownCharacters) {
+			for (const char of knownCharacters) {
 				if (!map.has(char.id)) {
 					map.set(char.id, colors[colorIndex % colors.length]);
 					colorIndex++;
@@ -112,12 +137,82 @@
 				}
 			}
 		}
+		// People who live here but aren't in this room, each with their own colour
+		// from the same map.
+		if (knownCharacters) {
+			for (const char of knownCharacters) {
+				if (!map.has(char.name)) {
+					const color = characterColorMap.get(char.id);
+					if (color) {
+						map.set(char.name, color);
+					}
+				}
+			}
+		}
 		return map;
 	});
 
 	let container: HTMLDivElement | undefined = $state();
 
+	/**
+	 * Whether the view is pinned to the bottom.
+	 *
+	 * Tracked so auto-scroll only follows new content when the reader is already
+	 * at the end — scrolling someone back down while they are reading earlier
+	 * messages is worse than not following at all. The threshold is generous
+	 * because "close enough to the bottom" is what the reader perceives as being
+	 * at the bottom.
+	 */
+	let pinned = $state(true);
+
+	function updatePinned() {
+		if (!container) return;
+		pinned = container.scrollHeight - container.clientHeight - container.scrollTop < 120;
+	}
+
+	/**
+	 * Follow content growth while pinned.
+	 *
+	 * The typing indicator, new messages, streamed text and late-loading images
+	 * all grow the content *after* the messages prop settles, so scrolling once
+	 * on send lands short — the "…" pushes the box down and the view stays put.
+	 *
+	 * A **MutationObserver on the subtree** rather than a ResizeObserver: the
+	 * scroll container itself never changes size (it is `flex-1` in a fixed
+	 * layout), so observing it fires nothing. What changes is `scrollHeight`, as
+	 * nodes appear *inside* it — and those nodes don't exist yet at mount, so
+	 * observing the children up front misses everything that matters.
+	 *
+	 * `characterData` and `attributes` are watched too, since a message being
+	 * edited in place grows without adding nodes.
+	 */
+	$effect(() => {
+		if (!container) return;
+
+		const follow = () => {
+			if (!pinned || !container) return;
+			container.scrollTop = container.scrollHeight;
+		};
+
+		const observer = new MutationObserver(follow);
+		observer.observe(container, {
+			childList: true,
+			subtree: true,
+			characterData: true
+		});
+
+		// Images settle after their node lands, so the height jumps again once
+		// they decode. `capture` because `load` does not bubble.
+		container.addEventListener('load', follow, true);
+
+		return () => {
+			observer.disconnect();
+			container?.removeEventListener('load', follow, true);
+		};
+	});
+
 	export function scrollToBottom() {
+		pinned = true;
 		if (container) {
 			container.scrollTop = container.scrollHeight;
 		}
@@ -128,7 +223,11 @@
 	}
 </script>
 
-<div class="flex-1 overflow-y-auto pl-6 pr-24 py-6" bind:this={container}>
+<div
+	class="flex-1 overflow-y-auto pl-6 pr-24 py-6"
+	bind:this={container}
+	onscroll={updatePinned}
+>
 	{#if loading}
 		<div class="flex items-center justify-center h-full">
 			<div class="text-[var(--text-muted)]">Loading conversation...</div>

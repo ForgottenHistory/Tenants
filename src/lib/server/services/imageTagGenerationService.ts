@@ -178,11 +178,22 @@ class ImageTagGenerationService {
 				user_clothes: userClothesText
 			};
 
-			// Replace template variables in prompts
+			// Replace template variables in prompts.
+			//
+			// `{{history}}` is substituted here rather than inside
+			// `replaceTemplateVariables`: the chat paths call that helper and then
+			// replace history themselves, so handling it in the shared helper would
+			// blank the placeholder before they got to it.
+			const fill = (template: string) =>
+				replaceTemplateVariables(template, templateVars).replace(
+					/\{\{history\}\}/g,
+					templateVars.history || ''
+				);
+
 			const processedPrompts = {
-				character: replaceTemplateVariables(prompts.character, templateVars),
-				user: replaceTemplateVariables(prompts.user, templateVars),
-				scene: replaceTemplateVariables(prompts.scene, templateVars)
+				character: fill(prompts.character),
+				user: fill(prompts.user),
+				scene: fill(prompts.scene)
 			};
 
 			const breakdown: { character?: string; user?: string; scene?: string } = {};

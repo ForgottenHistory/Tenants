@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { PageData } from './$types';
+	import { invalidateAll } from '$app/navigation';
 	import MainLayout from '$lib/components/MainLayout.svelte';
 	import { phaseLabel, weekdayLabel } from '$lib/house/phases';
 
@@ -7,6 +8,42 @@
 
 	let summary = $derived(data.summary);
 	let house = $derived(summary?.house ?? null);
+
+	let resetting = $state(false);
+	let resetError = $state<string | null>(null);
+
+	// Wipes tenants, applicants, placements, scenes and threads, then puts the
+	// clock back to day 1. The rooms stay — the property is what you built.
+	async function resetHouse() {
+		if (!house || resetting) return;
+		if (
+			!confirm(
+				`Reset ${house.name} to day 1? Every tenant, conversation and unresolved thread is deleted. The rooms stay.`
+			)
+		) {
+			return;
+		}
+
+		resetting = true;
+		resetError = null;
+
+		try {
+			const response = await fetch(`/api/houses/${house.id}/reset`, { method: 'POST' });
+			if (!response.ok) {
+				const result = await response.json();
+				resetError = result.error ?? 'Failed to reset house';
+				return;
+			}
+			// The switcher shows day/phase, and its copy of the house list isn't
+			// page data — invalidateAll() alone wouldn't update it.
+			window.dispatchEvent(new CustomEvent('houseUpdated'));
+			await invalidateAll();
+		} catch {
+			resetError = 'Network error. Please try again.';
+		} finally {
+			resetting = false;
+		}
+	}
 
 	// A house with nobody in it has nothing to do — no scenes, no rent, no
 	// reason to advance the day. Treat it as an unfinished setup step rather
@@ -165,6 +202,21 @@
 								</p>
 							</div>
 						</div>
+
+						<!-- Starting over. A real button, but secondary and red on hover so
+						     it never competes with Continue. -->
+						<div class="min-w-0">
+							<button
+								onclick={resetHouse}
+								disabled={resetting}
+								class="btn-secondary px-5 py-2.5 text-sm whitespace-nowrap hover:!border-[var(--error)] hover:!text-[var(--error)]"
+							>
+								{resetting ? 'Resetting…' : 'Reset to Day 1'}
+							</button>
+							{#if resetError}
+								<p class="text-xs text-[var(--error)] mt-1">{resetError}</p>
+							{/if}
+						</div>
 					</div>
 
 					<!-- The cast, left to right. Fills the row, wraps at any size. -->
@@ -231,6 +283,7 @@
 							{/if}
 						</div>
 					</div>
+
 				</div>
 			{:else}
 				<!-- ── No house yet: starting one is the only thing on offer ── -->

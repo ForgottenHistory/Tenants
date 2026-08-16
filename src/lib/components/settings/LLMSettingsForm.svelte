@@ -4,6 +4,7 @@
 	interface LLMSettings {
 		provider: string;
 		model: string;
+		models?: string[];
 		temperature: number;
 		maxTokens: number;
 		topP: number;
@@ -30,6 +31,31 @@
 		onSavePreset?: () => void;
 		onReload: () => void;
 	} = $props();
+
+	/**
+	 * Add or remove a model from the random-draw pool.
+	 *
+	 * `settings.model` is kept pointing at a member of the pool, because it is
+	 * still the fallback everything else reads — the server uses it whenever the
+	 * pool has fewer than two entries, and presets and logs read it too. Letting
+	 * it drift to a model that is no longer selected would mean the displayed
+	 * choice and the model actually used disagree.
+	 */
+	function toggleModel(modelId: string) {
+		const current = settings.models ?? [];
+		const next = current.includes(modelId)
+			? current.filter((m) => m !== modelId)
+			: [...current, modelId];
+
+		settings.models = next;
+
+		if (next.length === 0) {
+			// Emptied the pool: keep whatever single model was last chosen.
+			settings.model = modelId;
+		} else if (!next.includes(settings.model)) {
+			settings.model = next[0];
+		}
+	}
 </script>
 
 <form
@@ -60,8 +86,25 @@
 		<ModelSelector
 			selectedModel={settings.model}
 			provider={settings.provider}
+			pool={settings.models ?? []}
 			onSelect={(modelId) => (settings.model = modelId)}
+			onTogglePool={toggleModel}
 		/>
+		{#if (settings.models?.length ?? 0) > 1}
+			<!-- The pool as chips, so what's selected is visible without reopening -->
+			<div class="flex flex-wrap gap-1.5 mt-2">
+				{#each settings.models ?? [] as modelId (modelId)}
+					<button
+						type="button"
+						onclick={() => toggleModel(modelId)}
+						class="px-2 py-1 text-xs rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border-primary)] text-[var(--text-secondary)] hover:border-[var(--error)] hover:text-[var(--error)] transition"
+						title="Remove from pool"
+					>
+						{modelId} ×
+					</button>
+				{/each}
+			</div>
+		{/if}
 	</div>
 
 	<!-- Temperature -->

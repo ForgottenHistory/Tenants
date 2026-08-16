@@ -3,6 +3,7 @@ import type { PageServerLoad } from './$types';
 import { getUserById } from '$lib/server/auth';
 import { houseSceneService } from '$lib/server/services/houseSceneService';
 import { sceneService } from '$lib/server/services/sceneService';
+import { tenantService } from '$lib/server/services/tenantService';
 
 export const load: PageServerLoad = async ({ params, cookies }) => {
 	const userId = cookies.get('userId');
@@ -30,10 +31,19 @@ export const load: PageServerLoad = async ({ params, cookies }) => {
 		throw error(404, 'Scene not found');
 	}
 
-	const [messages, participants] = await Promise.all([
+	const [messages, participants, roster] = await Promise.all([
 		houseSceneService.getMessages(conversationId),
-		sceneService.getActiveCharacters(conversationId)
+		sceneService.getActiveCharacters(conversationId),
+		tenantService.getActiveTenants(found.house.id)
 	]);
+
+	// Everyone who lives here but isn't in this room. Characters talk about their
+	// housemates now that the prompt tells them who those are, so their names
+	// should read as people in the transcript rather than as plain words.
+	const presentIds = new Set(participants.map((c) => c.id));
+	const knownCharacters = roster
+		.filter((entry) => !presentIds.has(entry.character.id))
+		.map((entry) => ({ id: entry.character.id, name: entry.character.name }));
 
 	return {
 		user,
@@ -47,6 +57,7 @@ export const load: PageServerLoad = async ({ params, cookies }) => {
 			name: c.name,
 			thumbnailData: c.thumbnailData,
 			imageData: c.imageData
-		}))
+		})),
+		knownCharacters
 	};
 };

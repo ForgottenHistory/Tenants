@@ -44,6 +44,7 @@
 	let { user, currentPath, children, fullscreen = false }: Props = $props();
 
 	let sidebarCollapsed = $state(false);
+	let topBarCollapsed = $state(false);
 	let characters = $state<Character[]>(getCharactersCache());
 	let conversations = $state<ConversationInfo[]>(getConversationsCache());
 	let activePersona = $state<ActivePersonaInfo | null>(null);
@@ -54,6 +55,11 @@
 		const savedState = localStorage.getItem('sidebarCollapsed');
 		if (savedState !== null) {
 			sidebarCollapsed = savedState === 'true';
+		}
+
+		const savedTopBar = localStorage.getItem('topBarCollapsed');
+		if (savedTopBar !== null) {
+			topBarCollapsed = savedTopBar === 'true';
 		}
 
 		// Load conversations for sidebar (only if not cached)
@@ -145,6 +151,10 @@
 		localStorage.setItem('sidebarCollapsed', sidebarCollapsed.toString());
 	});
 
+	$effect(() => {
+		localStorage.setItem('topBarCollapsed', topBarCollapsed.toString());
+	});
+
 	async function loadCharacters() {
 		try {
 			const response = await fetch('/api/characters');
@@ -158,6 +168,10 @@
 
 	function toggleSidebar() {
 		sidebarCollapsed = !sidebarCollapsed;
+	}
+
+	function toggleTopBar() {
+		topBarCollapsed = !topBarCollapsed;
 	}
 </script>
 
@@ -193,9 +207,30 @@
 		</button>
 
 		<!-- Main Content Area -->
-		<div class="flex-1 flex flex-col">
+		<div class="flex-1 flex flex-col min-w-0 relative">
 			<!-- Top Navigation Bar -->
-			<TopNavBar {currentPath} {houses} />
+			{#if !topBarCollapsed}
+				<TopNavBar {currentPath} {houses} />
+			{/if}
+
+			<!-- Top bar toggle. Pinned to the right edge so it never sits over the
+			     nav links, and stays reachable once the bar is hidden. -->
+			<button
+				onclick={toggleTopBar}
+				class="absolute right-0 z-50 bg-[var(--bg-secondary)] border border-[var(--border-primary)] text-[var(--text-secondary)] p-1.5 rounded-bl-lg shadow-md hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] transition {topBarCollapsed
+					? 'top-0'
+					: 'top-[68px]'}"
+				title={topBarCollapsed ? 'Show menu' : 'Hide menu'}
+				aria-label={topBarCollapsed ? 'Show menu' : 'Hide menu'}
+			>
+				<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					{#if topBarCollapsed}
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+					{:else}
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+					{/if}
+				</svg>
+			</button>
 
 			<!-- Page Content -->
 			<div class="flex-1 overflow-hidden">

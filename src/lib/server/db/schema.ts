@@ -29,6 +29,21 @@ export const users = sqliteTable('users', {
 	// context. Expressed as a share so it scales with the model rather than
 	// needing a retune every time the context window changes. 0 disables recall.
 	sceneRecallPercent: integer('scene_recall_percent').notNull().default(15),
+	// How far back the house events fed into scene context reach, in DAYS.
+	// Measured in days rather than a fixed count so it scales with how eventful
+	// the house is: a quiet week and a chaotic one both give "what happened
+	// lately" rather than an arbitrary last-N that could span an hour or a month.
+	// 0 disables event recall entirely.
+	eventRecallDays: integer('event_recall_days').notNull().default(3),
+	// How busy the house simulation is, as PERCENT chances. Stored as integers
+	// rather than floats so the sliders and the DB agree exactly, and because a
+	// percent is what the settings UI actually shows.
+	//
+	// `houseDriftPercent` — chance per tenant per day that something goes wrong
+	// and they raise a gripe. `houseEventPercent` — chance per pair per phase of
+	// an off-screen moment between housemates. 0 disables that system entirely.
+	houseDriftPercent: integer('house_drift_percent').notNull().default(25),
+	houseEventPercent: integer('house_event_percent').notNull().default(28),
 	// User message color customization
 	userBubbleColor: text('user_bubble_color').notNull().default('#e0a458'),
 	userTextColor: text('user_text_color').notNull().default('#ffffff'),
@@ -572,7 +587,75 @@ export const threads = sqliteTable('threads', {
 		.$defaultFn(() => new Date())
 });
 
+/**
+ * How two characters in a house feel about each other.
+ *
+ * Distinct from `tenants.satisfaction`, which is about the housing. This is
+ * housemate-to-housemate, and it is what makes a full house feel like a
+ * household rather than four people in adjacent boxes.
+ *
+ * Stored **unordered**: `characterAId` is always the lower id, so a pair has
+ * exactly one row however it is looked up. Feelings here are mutual — the
+ * asymmetric version (A likes B more than B likes A) would double the rows and
+ * the writes for a nuance nothing reads yet.
+ *
+ * Keyed on characters rather than tenants so a relationship survives someone
+ * moving out and back in: they remember each other.
+ */
+export const relations = sqliteTable('relations', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	houseId: integer('house_id')
+		.notNull()
+		.references(() => houses.id, { onDelete: 'cascade' }),
+	characterAId: integer('character_a_id')
+		.notNull()
+		.references(() => characters.id, { onDelete: 'cascade' }),
+	characterBId: integer('character_b_id')
+		.notNull()
+		.references(() => characters.id, { onDelete: 'cascade' }),
+	// -100..100. Bands are derived (see $lib/house/relations.ts), not stored.
+	score: integer('score').notNull().default(0),
+	updatedAt: integer('updated_at', { mode: 'timestamp' })
+		.notNull()
+		.$defaultFn(() => new Date())
+});
+
+/**
+ * Something that happened in the house while the player wasn't watching.
+ *
+ * Append-only, like `occupancy`: the log IS the history, so "what happened on
+ * day 12" is a query rather than a reconstruction. Rolled on phase advance.
+ *
+ * The rendered text is stored rather than the template plus ids, so the log
+ * stays readable after a character is deleted or moves out — a line about
+ * someone who no longer lives here is still a true thing that happened.
+ */
+export const houseEvents = sqliteTable('house_events', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	houseId: integer('house_id')
+		.notNull()
+		.references(() => houses.id, { onDelete: 'cascade' }),
+	day: integer('day').notNull(),
+	phase: integer('phase').notNull(),
+	kind: text('kind').notNull().default('relation'), // room for other event kinds later
+	// Who was involved. Nulled rather than cascaded-away so the line survives.
+	characterAId: integer('character_a_id').references(() => characters.id, {
+		onDelete: 'set null'
+	}),
+	characterBId: integer('character_b_id').references(() => characters.id, {
+		onDelete: 'set null'
+	}),
+	text: text('text').notNull(),
+	/** How this moved the pair's relation, for display in the log. */
+	delta: integer('delta').notNull().default(0),
+	createdAt: integer('created_at', { mode: 'timestamp' })
+		.notNull()
+		.$defaultFn(() => new Date())
+});
+
 export type House = typeof houses.$inferSelect;
+export type Relation = typeof relations.$inferSelect;
+export type HouseEvent = typeof houseEvents.$inferSelect;
 export type NewHouse = typeof houses.$inferInsert;
 export type Scene = typeof scenes.$inferSelect;
 export type NewScene = typeof scenes.$inferInsert;

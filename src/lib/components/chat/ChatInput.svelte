@@ -447,8 +447,14 @@
 		color: var(--accent-hover);
 	}
 
+	/* Colour only — NEVER font-style, font-weight, or anything else that changes
+	   glyph advance widths. This div has to occupy exactly the same space as the
+	   textarea laid over it, character for character: the caret is drawn by the
+	   textarea, so any metric drift here puts the caret visibly off the character
+	   it is actually on, and typing or deleting hits the wrong spot. It was
+	   italic, and the system italic face is ~2.6% narrower, so a long *action*
+	   block pushed everything after it ~29px out of alignment. */
 	.rp-input-highlight :global(.rp-action) {
 		color: var(--text-muted);
-		font-style: italic;
 	}
 </style>

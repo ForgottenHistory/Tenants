@@ -34,15 +34,14 @@
 
 	// Rewrite states
 	let rewritingDescription = $state(false);
-	let rewritingScenario = $state(false);
-	let rewritingPersonality = $state(false);
+	let generatingPersonality = $state(false);
+	let generateError = $state<string | null>(null);
 
 	// References to editable fields for setting values after rewrite
 	let descriptionField: EditableTextField;
-	let scenarioField: EditableTextField;
 	let personalityField: EditableTextField;
 
-	async function rewriteField(field: 'description' | 'scenario' | 'personality', currentValue: string): Promise<string | null> {
+	async function rewriteField(field: 'description', currentValue: string): Promise<string | null> {
 		if (!currentValue.trim()) return null;
 
 		try {
@@ -81,40 +80,32 @@
 		}
 	}
 
-	async function handleRewriteScenario() {
-		const currentValue = data.scenario || '';
-		if (!currentValue.trim()) return;
-
-		rewritingScenario = true;
+	// Built from the Description rather than the current value, so it works on a
+	// card that has no personality at all — which is the usual state of an
+	// imported card, and what the house layer needs filled in.
+	async function handleGeneratePersonality() {
+		generatingPersonality = true;
+		generateError = null;
 		try {
-			const rewritten = await rewriteField('scenario', currentValue);
-			if (rewritten) {
-				scenarioField?.setEditValue(rewritten);
+			const response = await fetch(`/api/characters/${character.id}/personality`, {
+				method: 'POST'
+			});
+			const result = await response.json();
+			if (!response.ok) {
+				generateError = result.error || 'Failed to generate personality';
+				return;
 			}
+			personalityField?.setEditValue(result.personality);
+			personalityExpanded = true;
+		} catch {
+			generateError = 'Network error. Please try again.';
 		} finally {
-			rewritingScenario = false;
-		}
-	}
-
-	async function handleRewritePersonality() {
-		const currentValue = data.personality || '';
-		if (!currentValue.trim()) return;
-
-		rewritingPersonality = true;
-		try {
-			const rewritten = await rewriteField('personality', currentValue);
-			if (rewritten) {
-				personalityField?.setEditValue(rewritten);
-				personalityExpanded = true;
-			}
-		} finally {
-			rewritingPersonality = false;
+			generatingPersonality = false;
 		}
 	}
 
 	// Computed values
 	let descriptionValue = $derived(character.description || data.description || '');
-	let scenarioValue = $derived(data.scenario || '');
 	let personalityValue = $derived(data.personality || '');
 	let creatorNotesValue = $derived(data.creator_notes || '');
 	let creatorValue = $derived(data.creator || '');
@@ -122,7 +113,6 @@
 
 	// Original values for reset functionality
 	let originalDescription = $derived(originalData?.description);
-	let originalScenario = $derived(originalData?.scenario);
 	let originalPersonality = $derived(originalData?.personality);
 	let originalCreatorNotes = $derived(originalData?.creator_notes);
 	let originalCreator = $derived(originalData?.creator);
@@ -145,21 +135,6 @@
 		onRewrite={handleRewriteDescription}
 	/>
 
-	<!-- Scenario -->
-	<div class="mt-6">
-		<EditableTextField
-			bind:this={scenarioField}
-			label="Scenario"
-			value={scenarioValue}
-			originalValue={originalScenario}
-			showTokenCount={true}
-			showRewrite={true}
-			rewriting={rewritingScenario}
-			onSave={(value) => onSave('scenario', value)}
-			onRewrite={handleRewriteScenario}
-		/>
-	</div>
-
 	<!-- Collapsible: Personality -->
 	<CollapsibleSection
 		title="Personality"
@@ -167,6 +142,9 @@
 		expanded={personalityExpanded}
 		onToggle={() => (personalityExpanded = !personalityExpanded)}
 	>
+		{#if generateError}
+			<p class="text-sm text-[var(--error)] mb-2">{generateError}</p>
+		{/if}
 		<EditableTextField
 			bind:this={personalityField}
 			label="Personality"
@@ -174,10 +152,11 @@
 			originalValue={originalPersonality}
 			rows={6}
 			showTokenCount={false}
-			showRewrite={true}
-			rewriting={rewritingPersonality}
+			showGenerate={true}
+			generating={generatingPersonality}
+			generateTitle="Generate from Description"
 			onSave={(value) => onSave('personality', value)}
-			onRewrite={handleRewritePersonality}
+			onGenerate={handleGeneratePersonality}
 		/>
 	</CollapsibleSection>
 

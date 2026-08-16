@@ -117,7 +117,9 @@ class LlmService {
 		// Get settings from file
 		const userSettings = llmSettingsService.getSettings();
 
-		const selectedModel = model || userSettings.model;
+		// An explicit model always wins; otherwise draw from the configured pool,
+		// which falls back to the single `model` when no pool is set.
+		const selectedModel = model || llmSettingsService.resolveModel(userSettings);
 		const selectedTemperature = temperature ?? userSettings.temperature;
 		const selectedMaxTokens = maxTokens ?? userSettings.maxTokens;
 		const provider = userSettings.provider || 'openrouter';

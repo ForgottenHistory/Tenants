@@ -46,11 +46,18 @@ export interface WorldStateVariables {
 export interface TemplateVariables {
 	char: string;
 	user: string;
+	/** Who the player is — active persona description, or their profile bio. */
+	user_description?: string;
 	personality: string;
 	scenario: string;
 	description: string;
 	world?: string;
 	post_history?: string;
+	/** Image-tag generation extras. `{{history}}` is substituted by the caller. */
+	image_tags?: string;
+	contextual_tags?: string;
+	tag_library?: string;
+	user_clothes?: string;
 	writing_style?: string;
 	// World state (for conditionals)
 	world_sidebar?: boolean;
@@ -156,12 +163,17 @@ export function replaceTemplateVariables(
 	const lookup: Record<string, any> = {
 		char: variables.char,
 		user: variables.user,
+		user_description: variables.user_description,
 		personality: variables.personality,
 		scenario: variables.scenario,
 		description: variables.description,
 		world: variables.world,
 		post_history: variables.post_history,
 		writing_style: variables.writing_style,
+		image_tags: variables.image_tags,
+		contextual_tags: variables.contextual_tags,
+		tag_library: variables.tag_library,
+		user_clothes: variables.user_clothes,
 		world_sidebar: variables.world_sidebar,
 		char_mood: variables.char_mood,
 		char_position: variables.char_position,
@@ -175,11 +187,23 @@ export function replaceTemplateVariables(
 	return result
 		.replace(/\{\{char\}\}/g, variables.char)
 		.replace(/\{\{user\}\}/g, variables.user)
+		.replace(/\{\{user_description\}\}/g, variables.user_description || '')
 		.replace(/\{\{personality\}\}/g, variables.personality)
 		.replace(/\{\{scenario\}\}/g, variables.scenario)
 		.replace(/\{\{description\}\}/g, variables.description)
 		.replace(/\{\{world\}\}/g, variables.world || '')
 		.replace(/\{\{post_history\}\}/g, variables.post_history || '')
+		// Image-tag extras.
+		//
+		// `{{history}}` is deliberately NOT handled here: the chat paths call this
+		// first and substitute history themselves afterwards, so replacing it now
+		// would blank the placeholder before they ever see it — silently emptying
+		// the conversation out of every chat prompt. Callers that want history
+		// substitute it after this returns.
+		.replace(/\{\{image_tags\}\}/g, variables.image_tags || '')
+		.replace(/\{\{contextual_tags\}\}/g, variables.contextual_tags || '')
+		.replace(/\{\{tag_library\}\}/g, variables.tag_library || '')
+		.replace(/\{\{user_clothes\}\}/g, variables.user_clothes || '')
 		.replace(/\{\{writing_style\}\}/g, variables.writing_style || '')
 		.replace(/\{\{char_mood\}\}/g, variables.char_mood || '')
 		.replace(/\{\{char_position\}\}/g, variables.char_position || '')

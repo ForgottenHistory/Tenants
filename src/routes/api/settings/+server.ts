@@ -4,6 +4,7 @@ import { db } from '$lib/server/db';
 import { users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { personaService } from '$lib/server/services/personaService';
+import { EVENT_RECALL_DAYS_DEFAULT, EVENT_RECALL_DAYS_MAX } from '$lib/house/relations';
 
 export const GET: RequestHandler = async ({ cookies }) => {
 	const userId = cookies.get('userId');
@@ -32,6 +33,9 @@ export const GET: RequestHandler = async ({ cookies }) => {
 		randomNarrationMaxMessages: user.randomNarrationMaxMessages ?? 8,
 		worldSidebarEnabled: user.worldSidebarEnabled ?? false,
 		sceneRecallPercent: user.sceneRecallPercent ?? 15,
+		eventRecallDays: user.eventRecallDays ?? EVENT_RECALL_DAYS_DEFAULT,
+		houseDriftPercent: user.houseDriftPercent ?? 25,
+		houseEventPercent: user.houseEventPercent ?? 28,
 		autoWorldStateEnabled: user.autoWorldStateEnabled ?? false,
 		autoWorldStateMinMessages: user.autoWorldStateMinMessages ?? 5,
 		autoWorldStateMaxMessages: user.autoWorldStateMaxMessages ?? 12,
@@ -49,7 +53,7 @@ export const PUT: RequestHandler = async ({ cookies, request }) => {
 	}
 
 	const body = await request.json();
-	const { chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, sceneRecallPercent, writingStyle, userBubbleColor, userTextColor } = body;
+	const { chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, writingStyle, userBubbleColor, userTextColor } = body;
 
 	// Validate chatLayout
 	if (chatLayout && !['bubbles', 'discord'].includes(chatLayout)) {
@@ -90,7 +94,7 @@ export const PUT: RequestHandler = async ({ cookies, request }) => {
 		return json({ error: 'Invalid text color format' }, { status: 400 });
 	}
 
-	const updateData: { chatLayout?: string; avatarStyle?: string; textCleanupEnabled?: boolean; autoWrapActions?: boolean; randomNarrationEnabled?: boolean; randomNarrationMinMessages?: number; randomNarrationMaxMessages?: number; worldSidebarEnabled?: boolean; sceneRecallPercent?: number; autoWorldStateEnabled?: boolean; autoWorldStateMinMessages?: number; autoWorldStateMaxMessages?: number; writingStyle?: string; userBubbleColor?: string; userTextColor?: string } = {};
+	const updateData: { chatLayout?: string; avatarStyle?: string; textCleanupEnabled?: boolean; autoWrapActions?: boolean; randomNarrationEnabled?: boolean; randomNarrationMinMessages?: number; randomNarrationMaxMessages?: number; worldSidebarEnabled?: boolean; sceneRecallPercent?: number; eventRecallDays?: number; houseDriftPercent?: number; houseEventPercent?: number; autoWorldStateEnabled?: boolean; autoWorldStateMinMessages?: number; autoWorldStateMaxMessages?: number; writingStyle?: string; userBubbleColor?: string; userTextColor?: string } = {};
 	if (chatLayout) updateData.chatLayout = chatLayout;
 	if (avatarStyle) updateData.avatarStyle = avatarStyle;
 	if (typeof textCleanupEnabled === 'boolean') updateData.textCleanupEnabled = textCleanupEnabled;
@@ -102,6 +106,12 @@ export const PUT: RequestHandler = async ({ cookies, request }) => {
 	// Clamped: some headroom has to remain for the character card, the house
 	// context and the conversation itself.
 	if (typeof sceneRecallPercent === 'number') updateData.sceneRecallPercent = Math.max(0, Math.min(90, Math.round(sceneRecallPercent)));
+	// Clamped for the same reason: events are repeated on every message, and a
+	// long window in a busy house is a lot of prompt.
+	if (typeof eventRecallDays === 'number') updateData.eventRecallDays = Math.max(0, Math.min(EVENT_RECALL_DAYS_MAX, Math.round(eventRecallDays)));
+	// Percent chances, so 0-100. 0 disables that system.
+	if (typeof houseDriftPercent === 'number') updateData.houseDriftPercent = Math.max(0, Math.min(100, Math.round(houseDriftPercent)));
+	if (typeof houseEventPercent === 'number') updateData.houseEventPercent = Math.max(0, Math.min(100, Math.round(houseEventPercent)));
 	if (typeof autoWorldStateEnabled === 'boolean') updateData.autoWorldStateEnabled = autoWorldStateEnabled;
 	if (typeof autoWorldStateMinMessages === 'number') updateData.autoWorldStateMinMessages = autoWorldStateMinMessages;
 	if (typeof autoWorldStateMaxMessages === 'number') updateData.autoWorldStateMaxMessages = autoWorldStateMaxMessages;
@@ -111,5 +121,5 @@ export const PUT: RequestHandler = async ({ cookies, request }) => {
 
 	await db.update(users).set(updateData).where(eq(users.id, parseInt(userId)));
 
-	return json({ success: true, chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, writingStyle, userBubbleColor, userTextColor });
+	return json({ success: true, chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, writingStyle, userBubbleColor, userTextColor });
 };

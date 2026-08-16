@@ -1,10 +1,11 @@
 <script lang="ts">
 	import type { PageData } from './$types';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, tick } from 'svelte';
 	import MainLayout from '$lib/components/MainLayout.svelte';
 	import ChatMessages from '$lib/components/chat/ChatMessages.svelte';
 	import ChatInput from '$lib/components/chat/ChatInput.svelte';
 	import ChatWorldPanel from '$lib/components/chat/ChatWorldPanel.svelte';
+	import ImageGenerateModal from '$lib/components/chat/ImageGenerateModal.svelte';
 	import { phaseLabel, weekdayLabel } from '$lib/house/phases';
 	import {
 		initSocket,
@@ -31,13 +32,147 @@
 	let worldStateLoading = $state(false);
 	let worldSidebarEnabled = $state(false);
 
+	// Random narration and auto world-state updates. Both were built for the
+	// library chat and never wired into scenes, so the settings appeared to do
+	// nothing here. Same counter-and-threshold model as `chatState.svelte.ts`:
+	// count messages, fire on a random count within the configured range, then
+	// pick a new threshold so it doesn't settle into a rhythm.
+	let randomNarrationEnabled = $state(false);
+	let randomNarrationMinMessages = $state(3);
+	let randomNarrationMaxMessages = $state(8);
+	let messagesSinceLastNarration = $state(0);
+	let nextNarrationThreshold = $state(0);
+	let randomNarrationPending = $state(false);
+
+	let autoWorldStateEnabled = $state(false);
+	let autoWorldStateMinMessages = $state(5);
+	let autoWorldStateMaxMessages = $state(12);
+	let messagesSinceLastWorldUpdate = $state(0);
+	let nextWorldUpdateThreshold = $state(0);
+	let worldUpdatePending = $state(false);
+
+	function pickNextNarrationThreshold() {
+		return (
+			Math.floor(Math.random() * (randomNarrationMaxMessages - randomNarrationMinMessages + 1)) +
+			randomNarrationMinMessages
+		);
+	}
+
+	function pickNextWorldUpdateThreshold() {
+		return (
+			Math.floor(Math.random() * (autoWorldStateMaxMessages - autoWorldStateMinMessages + 1)) +
+			autoWorldStateMinMessages
+		);
+	}
+
 	let messages = $state<Message[]>(data.messages as Message[]);
 	let sending = $state(false);
 	let isTyping = $state(false);
 	let error = $state<string | null>(null);
 
-	// Who answers when several people share a room. Null = the scene's primary.
+	// Who replies is decided server-side: the first character you name in the
+	// message, or a random one present if you name nobody. Scene actions still
+	// target a specific character by passing an explicit id.
 	let speakerId = $state<number | null>(null);
+	// Set while waiting on a character prompted from the room row.
+	let promptingId = $state<number | null>(null);
+
+	// Image generation. Two steps, same as the library chat: the Image LLM writes
+	// Danbooru tags, you review/edit them in the modal, then Stable Diffusion
+	// renders. Both endpoints are conversation-keyed rather than character-keyed,
+	// since a scene is never the character's "active" conversation.
+	let showImageModal = $state(false);
+	let imageModalLoading = $state(false);
+	let imageModalTags = $state('');
+	let imageModalType = $state<'character' | 'user' | 'scene' | 'raw'>('scene');
+	let generatingImage = $state(false);
+	let generatingSD = $state(false);
+
+	async function fetchImageTags(type: 'character' | 'user' | 'scene' | 'raw') {
+		const response = await fetch(`/api/scenes/${data.conversationId}/generate-image`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			// Whoever is answering is who the image is of. In a shared room that
+			// is the character you last addressed.
+			body: JSON.stringify({ type, characterId: activeSpeaker?.id })
+		});
+		if (!response.ok) {
+			const result = await response.json().catch(() => ({}));
+			error = result.error ?? 'Failed to write image tags';
+			return null;
+		}
+		const result = await response.json();
+		return result.tags as string;
+	}
+
+	async function generateImage(type: 'character' | 'user' | 'scene' | 'raw') {
+		if (generatingImage) return;
+
+		imageModalType = type;
+		imageModalTags = '';
+		showImageModal = true;
+		error = null;
+
+		// "Raw" is you writing the prompt yourself — no LLM pass.
+		if (type === 'raw') {
+			imageModalLoading = false;
+			return;
+		}
+
+		imageModalLoading = true;
+		generatingImage = true;
+		try {
+			const tags = await fetchImageTags(type);
+			if (tags) {
+				imageModalTags = tags;
+			} else {
+				showImageModal = false;
+			}
+		} finally {
+			imageModalLoading = false;
+			generatingImage = false;
+		}
+	}
+
+	async function handleImageGenerate(tags: string) {
+		if (generatingSD) return;
+		generatingSD = true;
+		error = null;
+
+		try {
+			const response = await fetch(`/api/scenes/${data.conversationId}/generate-sd`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ tags, characterId: activeSpeaker?.id })
+			});
+
+			if (!response.ok) {
+				const result = await response.json().catch(() => ({}));
+				error = result.error ?? 'Failed to generate image';
+				return;
+			}
+
+			showImageModal = false;
+			imageModalTags = '';
+			await refresh();
+			await scrollAfterRender();
+		} catch {
+			error = 'Network error. Please try again.';
+		} finally {
+			generatingSD = false;
+		}
+	}
+
+	async function handleImageRegenerate() {
+		imageModalTags = '';
+		imageModalLoading = true;
+		try {
+			const tags = await fetchImageTags(imageModalType);
+			if (tags) imageModalTags = tags;
+		} finally {
+			imageModalLoading = false;
+		}
+	}
 
 	let participants = $derived(data.participants);
 	let isInterview = $derived(data.scene.placeKind === 'interview');
@@ -67,14 +202,76 @@
 			userAvatar = result.userAvatar || null;
 			userName = result.userName || null;
 			worldSidebarEnabled = result.worldSidebarEnabled ?? false;
+			randomNarrationEnabled = result.randomNarrationEnabled ?? false;
+			randomNarrationMinMessages = result.randomNarrationMinMessages ?? 3;
+			randomNarrationMaxMessages = result.randomNarrationMaxMessages ?? 8;
+			autoWorldStateEnabled = result.autoWorldStateEnabled ?? false;
+			autoWorldStateMinMessages = result.autoWorldStateMinMessages ?? 5;
+			autoWorldStateMaxMessages = result.autoWorldStateMaxMessages ?? 12;
+
+			// Seed the first thresholds once settings are known — they are picked
+			// from the configured range, which isn't available before this returns.
+			if (randomNarrationEnabled && nextNarrationThreshold === 0) {
+				nextNarrationThreshold = pickNextNarrationThreshold();
+			}
+			if (autoWorldStateEnabled && nextWorldUpdateThreshold === 0) {
+				nextWorldUpdateThreshold = pickNextWorldUpdateThreshold();
+			}
 		} catch {
 			// Defaults are fine — the scene still works.
+		}
+	}
+
+	/**
+	 * A spontaneous look or narration beat, so a scene doesn't sit completely
+	 * still between the player's messages.
+	 */
+	async function triggerRandomNarration() {
+		if (randomNarrationPending || sending) return;
+		randomNarrationPending = true;
+		try {
+			const actionTypes = ['look_character', 'look_scene', 'narrate'];
+			let pick = actionTypes[Math.floor(Math.random() * actionTypes.length)];
+
+			// look_character needs someone to look at. With nobody resolvable the
+			// action would be meaningless, so fall back to the room instead.
+			let context: { characterId: number; characterName: string } | undefined;
+			if (pick === 'look_character') {
+				if (activeSpeaker) {
+					context = { characterId: activeSpeaker.id, characterName: activeSpeaker.name };
+				} else {
+					pick = 'look_scene';
+				}
+			}
+
+			await sceneAction(pick, context);
+		} catch (err) {
+			console.error('Failed to trigger random narration:', err);
+		} finally {
+			randomNarrationPending = false;
+		}
+	}
+
+	async function triggerWorldStateUpdate() {
+		if (worldUpdatePending || worldStateLoading) return;
+		worldUpdatePending = true;
+		try {
+			await generateWorldState();
+		} catch (err) {
+			console.error('Failed to trigger world state update:', err);
+		} finally {
+			worldUpdatePending = false;
 		}
 	}
 
 	onMount(() => {
 		initSocket();
 		joinConversation(data.conversationId);
+
+		// Walk into a scene at the newest message, not the oldest. Resuming a room
+		// you have been talking in for a while otherwise opens at the top, showing
+		// the narrator intro rather than where the conversation actually is.
+		scrollAfterRender();
 
 		// Show whatever was last recorded straight away, then refresh it: the
 		// clock has usually moved since you were last in this room, so a stale
@@ -90,7 +287,39 @@
 			if (message.conversationId !== data.conversationId) return;
 			if (messages.some((m) => m.id === message.id)) return;
 			messages = [...messages, message];
-			chatMessages?.scrollToBottom();
+			scrollAfterRender();
+
+			// Count toward a random narration beat. Only real turns count —
+			// narrator output would otherwise trigger more narration.
+			if (randomNarrationEnabled && (message.role === 'user' || message.role === 'assistant')) {
+				messagesSinceLastNarration++;
+				// Fire only after a character has spoken, so the beat lands between
+				// exchanges rather than interrupting the player's turn.
+				if (messagesSinceLastNarration >= nextNarrationThreshold && message.role === 'assistant') {
+					messagesSinceLastNarration = 0;
+					nextNarrationThreshold = pickNextNarrationThreshold();
+					// Let the message render before the beat lands on top of it.
+					setTimeout(() => triggerRandomNarration(), 500);
+				}
+			}
+
+			// Keep the world panel current. Gated on the panel being on, since
+			// regenerating state nobody can see is a wasted Content LLM call.
+			if (autoWorldStateEnabled && worldSidebarEnabled) {
+				if (message.role === 'narrator') {
+					setTimeout(() => triggerWorldStateUpdate(), 500);
+				} else if (message.role === 'user' || message.role === 'assistant') {
+					messagesSinceLastWorldUpdate++;
+					if (
+						messagesSinceLastWorldUpdate >= nextWorldUpdateThreshold &&
+						message.role === 'assistant'
+					) {
+						messagesSinceLastWorldUpdate = 0;
+						nextWorldUpdateThreshold = pickNextWorldUpdateThreshold();
+						setTimeout(() => triggerWorldStateUpdate(), 500);
+					}
+				}
+			}
 		});
 
 		onTyping((typing: boolean) => {
@@ -315,12 +544,25 @@
 			}
 
 			await refresh();
-			chatMessages?.scrollToBottom();
+			await scrollAfterRender();
 		} catch {
 			error = 'Network error. Please try again.';
 		} finally {
 			sending = false;
 		}
+	}
+
+	/**
+	 * Scroll after Svelte has rendered the new messages.
+	 *
+	 * `scrollToBottom` reads `scrollHeight`, so calling it in the same tick as the
+	 * `messages` assignment measures the OLD height and lands short — the new
+	 * message stays below the fold. `tick()` waits for the DOM update exactly,
+	 * rather than guessing with a timeout.
+	 */
+	async function scrollAfterRender() {
+		await tick();
+		chatMessages?.scrollToBottom();
 	}
 
 	/** Re-read the scene after a server-side change. */
@@ -329,6 +571,44 @@
 		if (!response.ok) return;
 		const result = await response.json();
 		messages = result.messages;
+	}
+
+	/**
+	 * Nudge one character to speak, without the player saying anything.
+	 *
+	 * Clicking someone in the room row is "your turn" — useful when two people
+	 * are present and you want to hear from the quiet one, or to let them react
+	 * to what was just said. No user message is written, so the transcript stays
+	 * a record of what was actually said.
+	 */
+	async function promptCharacter(characterId: number) {
+		if (sending) return;
+		sending = true;
+		promptingId = characterId;
+		error = null;
+
+		try {
+			const response = await fetch(`/api/scenes/${data.conversationId}/send`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ speakerId: characterId })
+			});
+
+			const result = await response.json();
+
+			if (!response.ok) {
+				error = result.error ?? 'Failed to get a reply';
+				return;
+			}
+
+			messages = result.messages;
+			await scrollAfterRender();
+		} catch {
+			error = 'Network error. Please try again.';
+		} finally {
+			sending = false;
+			promptingId = null;
+		}
 	}
 
 	async function send(text: string) {
@@ -340,7 +620,9 @@
 			const response = await fetch(`/api/scenes/${data.conversationId}/send`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ message: text, speakerId })
+				// No speakerId: the server picks who replies — the first character
+				// named in the message, or a random one present.
+				body: JSON.stringify({ message: text })
 			});
 
 			const result = await response.json();
@@ -351,7 +633,7 @@
 			}
 
 			messages = result.messages;
-			chatMessages?.scrollToBottom();
+			await scrollAfterRender();
 		} catch {
 			error = 'Network error. Please try again.';
 		} finally {
@@ -413,21 +695,27 @@
 			</div>
 		</div>
 
-		{#if participants.length > 1}
-			<!-- Several people in the room: pick who you are addressing. -->
+		{#if participants.length > 0 && !isInterview}
+			<!-- Who is here, and a way to hand any of them the turn. Not a picker:
+			     a normal message goes to whoever you name (or a random one), and
+			     clicking a face just asks that person to speak. Shown even with one
+			     person, since "say something" is useful on its own. -->
 			<div
 				class="flex items-center gap-2 px-6 py-3 border-b border-[var(--border-primary)] bg-[var(--bg-secondary)] flex-wrap"
 			>
 				<span class="text-xs uppercase tracking-wider text-[var(--text-muted)] mr-1">
-					Talking to
+					In the room
 				</span>
 				{#each participants as person (person.id)}
 					<button
-						onclick={() => (speakerId = person.id)}
-						class="flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm transition {activeSpeaker?.id ===
+						type="button"
+						onclick={() => promptCharacter(person.id)}
+						disabled={sending}
+						title="Let {person.name} say something"
+						class="flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm transition disabled:opacity-40 disabled:cursor-not-allowed {promptingId ===
 						person.id
 							? 'border-[var(--accent-primary)] bg-[var(--accent-primary)]/10 text-[var(--text-primary)]'
-							: 'border-[var(--border-primary)] text-[var(--text-secondary)] hover:border-[var(--border-secondary)]'}"
+							: 'border-[var(--border-primary)] text-[var(--text-secondary)] hover:border-[var(--accent-primary)] hover:text-[var(--text-primary)]'}"
 					>
 						{#if person.thumbnailData}
 							<img
@@ -437,6 +725,11 @@
 							/>
 						{/if}
 						{person.name}
+						{#if promptingId === person.id}
+							<div
+								class="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin"
+							></div>
+						{/if}
 					</button>
 				{/each}
 			</div>
@@ -481,6 +774,7 @@
 						{autoWrapActions}
 						{userBubbleColor}
 						sceneCharacters={participants}
+						knownCharacters={data.knownCharacters}
 						onSwipe={swipe}
 						onSaveEdit={saveEdit}
 						onDelete={deleteFrom}
@@ -492,9 +786,11 @@
 						{impersonating}
 						hasAssistantMessages={messages.some((m) => m.role === 'assistant')}
 						sceneCharacters={participants}
+						{generatingImage}
 						onSend={send}
 						onImpersonate={impersonate}
 						onRegenerate={regenerateLast}
+						onGenerateImage={generateImage}
 						onSceneAction={(type, context) => sceneAction(type, context)}
 					/>
 				{/if}
@@ -514,3 +810,14 @@
 		</div>
 	</div>
 </MainLayout>
+
+<ImageGenerateModal
+	bind:show={showImageModal}
+	loading={imageModalLoading}
+	generating={generatingSD}
+	tags={imageModalTags}
+	type={imageModalType}
+	onGenerate={handleImageGenerate}
+	onRegenerate={handleImageRegenerate}
+	onCancel={() => (imageModalTags = '')}
+/>

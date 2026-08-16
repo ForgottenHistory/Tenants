@@ -27,9 +27,16 @@
 		expiring: Expiring[];
 		/** Called with a character id when a row is clicked, to go find them. */
 		onFind?: (characterId: number) => void;
+		/**
+		 * Close a thread without needing a scene. `resolved` means you actually
+		 * dealt with it and credits satisfaction; `dropped` just clears it.
+		 */
+		onClose?: (threadId: number, outcome: 'resolved' | 'dropped') => void;
+		/** Thread currently being closed, for the spinner. */
+		closingId?: number | null;
 	}
 
-	let { day, openThreads, expiring, onFind }: Props = $props();
+	let { day, openThreads, expiring, onFind, onClose, closingId = null }: Props = $props();
 
 	// Overdue first, then oldest — the things that have been waiting longest are
 	// the ones most worth chasing.
@@ -74,35 +81,76 @@
 	{:else}
 		<!-- Unfinished business: things asked for or promised and not yet closed -->
 		{#each sorted as thread (thread.id)}
-			<button
-				type="button"
-				onclick={() => onFind?.(thread.characterId)}
-				class="w-full text-left flex items-start gap-3 px-4 py-3 border-b border-[var(--border-primary)] hover:bg-[var(--bg-tertiary)] transition"
+			<!-- The row itself walks you to the character; the actions close it
+			     without needing a scene. Nested buttons are invalid HTML, so the
+			     row is a group rather than one big button. -->
+			<div
+				class="group flex items-start gap-3 px-4 py-3 border-b border-[var(--border-primary)] hover:bg-[var(--bg-tertiary)] transition"
 			>
-				{#if thread.characterImage}
-					<img
-						src={thread.characterImage}
-						alt={thread.characterName}
-						class="w-8 h-8 rounded-md object-cover object-top flex-shrink-0 mt-0.5"
-					/>
-				{:else}
-					<div
-						class="w-8 h-8 rounded-md bg-[var(--bg-tertiary)] flex items-center justify-center flex-shrink-0 mt-0.5 text-xs text-[var(--text-muted)]"
-					>
-						{thread.characterName.charAt(0)}
-					</div>
-				{/if}
+				<button
+					type="button"
+					onclick={() => onFind?.(thread.characterId)}
+					class="flex items-start gap-3 text-left min-w-0 flex-1"
+					title="Go find {thread.characterName}"
+				>
+					{#if thread.characterImage}
+						<img
+							src={thread.characterImage}
+							alt={thread.characterName}
+							class="w-8 h-8 rounded-md object-cover object-top flex-shrink-0 mt-0.5"
+						/>
+					{:else}
+						<div
+							class="w-8 h-8 rounded-md bg-[var(--bg-tertiary)] flex items-center justify-center flex-shrink-0 mt-0.5 text-xs text-[var(--text-muted)]"
+						>
+							{thread.characterName.charAt(0)}
+						</div>
+					{/if}
 
-				<div class="min-w-0 flex-1">
-					<p class="text-sm text-[var(--text-primary)] leading-snug">
-						{thread.summary}
-					</p>
-					<p class="text-xs text-[var(--text-muted)] mt-0.5 truncate">
-						{thread.kind === 'promise' ? 'You promised' : thread.characterName + ' asked'}
-						<span class={isLate(thread) ? 'text-[var(--warning)]' : ''}>· {age(thread)}</span>
-					</p>
+					<div class="min-w-0 flex-1">
+						<p class="text-sm text-[var(--text-primary)] leading-snug">
+							{thread.summary}
+						</p>
+						<p class="text-xs text-[var(--text-muted)] mt-0.5 truncate">
+							{thread.kind === 'promise' ? 'You promised' : thread.characterName + ' asked'}
+							<span class={isLate(thread) ? 'text-[var(--warning)]' : ''}>· {age(thread)}</span>
+						</p>
+					</div>
+				</button>
+
+				<div class="flex items-center gap-1 flex-shrink-0 mt-0.5">
+					<button
+						type="button"
+						onclick={() => onClose?.(thread.id, 'resolved')}
+						disabled={closingId === thread.id}
+						title="Mark as done"
+						aria-label="Mark {thread.summary} as done"
+						class="w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--success)] hover:bg-[var(--success)]/10 transition disabled:opacity-40"
+					>
+						{#if closingId === thread.id}
+							<div
+								class="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin"
+							></div>
+						{:else}
+							<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+							</svg>
+						{/if}
+					</button>
+					<button
+						type="button"
+						onclick={() => onClose?.(thread.id, 'dropped')}
+						disabled={closingId === thread.id}
+						title="Dismiss — no longer matters"
+						aria-label="Dismiss {thread.summary}"
+						class="w-7 h-7 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--error)] hover:bg-[var(--error)]/10 transition disabled:opacity-40"
+					>
+						<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+						</svg>
+					</button>
 				</div>
-			</button>
+			</div>
 		{/each}
 
 		<!-- Leases running out: the other reason to go and talk to someone -->

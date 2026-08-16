@@ -1,7 +1,7 @@
 import { db } from '../db';
-import { tenants, threads, characters } from '../db/schema';
+import { tenants, threads, characters, users } from '../db/schema';
 import { eq, and, lt, inArray } from 'drizzle-orm';
-import { SATISFACTION, clampSatisfaction } from '$lib/house/tenancy';
+import { SATISFACTION, clampSatisfaction, HOUSE_GRIPES } from '$lib/house/tenancy';
 
 /** One tenant's satisfaction moving, with why — so the UI can report it. */
 export interface SatisfactionChange {
@@ -54,23 +54,82 @@ class SatisfactionService {
 	 * A chance rather than a fixed decay: a house that degrades on a timer is a
 	 * treadmill, but one where things *sometimes* go wrong reads as upkeep. The
 	 * tenant with no complaints this week simply got lucky.
+	 *
+	 * Each drop names an **actual gripe** and opens a `request` thread for it.
+	 * The reason used to be the string "something around the house", which meant
+	 * the tenant lost satisfaction over nothing nameable and — since the reason
+	 * never reached the prompt — could not discuss it when asked. Going through
+	 * `threads` means the complaint lands in the scene context under
+	 * "Unresolved:", shows up in the Needs You panel, and can be resolved for the
+	 * usual satisfaction credit. The number now has a cause the player can act on.
 	 */
-	async applyDailyDrift(houseId: number): Promise<SatisfactionChange[]> {
+	async applyDailyDrift(
+		houseId: number,
+		day: number,
+		userId?: number
+	): Promise<SatisfactionChange[]> {
+		// The player's difficulty dial (General Settings → House Simulation).
+		// Falls back to the constant when no user is passed, so any caller that
+		// doesn't know the user still behaves as before. 0 turns drift off.
+		let chance = SATISFACTION.DAILY_DROP_CHANCE;
+		if (userId !== undefined) {
+			const [user] = await db
+				.select({ percent: users.houseDriftPercent })
+				.from(users)
+				.where(eq(users.id, userId))
+				.limit(1);
+			if (user) chance = user.percent / 100;
+		}
+		if (chance <= 0) return [];
+
 		const roster = await db
-			.select({ id: tenants.id })
+			.select({ id: tenants.id, characterId: tenants.characterId })
 			.from(tenants)
 			.where(and(eq(tenants.houseId, houseId), eq(tenants.status, 'active')));
 
 		const changes: SatisfactionChange[] = [];
 
 		for (const t of roster) {
-			if (Math.random() >= SATISFACTION.DAILY_DROP_CHANCE) continue;
+			if (Math.random() >= chance) continue;
 
 			const span = SATISFACTION.DAILY_DROP_MAX - SATISFACTION.DAILY_DROP_MIN + 1;
 			const drop = SATISFACTION.DAILY_DROP_MIN + Math.floor(Math.random() * span);
 
-			const change = await this.adjust(t.id, -drop, 'something around the house');
-			if (change) changes.push(change);
+			// Don't hand someone a second complaint about a thing they are already
+			// complaining about — it would nag twice and never fully close.
+			const existing = await db
+				.select({ summary: threads.summary })
+				.from(threads)
+				.where(
+					and(
+						eq(threads.houseId, houseId),
+						eq(threads.characterId, t.characterId),
+						eq(threads.status, 'open')
+					)
+				);
+			const openSummaries = new Set(existing.map((e) => e.summary));
+
+			const available = HOUSE_GRIPES.filter((g) => !openSummaries.has(g));
+			// Everything is already broken for this tenant. Skip rather than
+			// stacking a duplicate.
+			if (available.length === 0) continue;
+
+			const gripe = available[Math.floor(Math.random() * available.length)];
+
+			const change = await this.adjust(t.id, -drop, gripe);
+			if (!change) continue;
+
+			await db.insert(threads).values({
+				houseId,
+				characterId: t.characterId,
+				kind: 'request',
+				summary: gripe,
+				openedDay: day,
+				dueDay: null,
+				status: 'open'
+			});
+
+			changes.push(change);
 		}
 
 		return changes;

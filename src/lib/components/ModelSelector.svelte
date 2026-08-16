@@ -11,9 +11,39 @@
 		selectedModel: string;
 		provider?: string;
 		onSelect: (modelId: string) => void;
+		/**
+		 * The random-draw pool. When it holds two or more entries, each request
+		 * picks one at random; otherwise `selectedModel` is used. Passing
+		 * `onTogglePool` is what turns the picker into a multi-select.
+		 */
+		pool?: string[];
+		onTogglePool?: (modelId: string) => void;
 	}
 
-	let { selectedModel, provider = 'openrouter', onSelect }: Props = $props();
+	let {
+		selectedModel,
+		provider = 'openrouter',
+		onSelect,
+		pool = [],
+		onTogglePool
+	}: Props = $props();
+
+	let multi = $derived(!!onTogglePool);
+
+	/** A model is "on" if it's in the pool, or — with no pool — is the single pick. */
+	function isActive(modelId: string): boolean {
+		if (multi && pool.length > 0) return pool.includes(modelId);
+		return selectedModel === modelId;
+	}
+
+	/** What the closed button shows. */
+	let summary = $derived.by(() => {
+		if (multi && pool.length > 1) {
+			return `${pool.length} models — random each message`;
+		}
+		if (multi && pool.length === 1) return getModelName(pool[0]);
+		return getModelName(selectedModel);
+	});
 
 	let models = $state<Model[]>([]);
 	let filteredModels = $state<Model[]>([]);
@@ -59,6 +89,12 @@
 	}
 
 	function selectModel(modelId: string) {
+		if (multi) {
+			// Stay open: picking a pool is several clicks, and closing after each
+			// one would make building a list of five models tedious.
+			onTogglePool?.(modelId);
+			return;
+		}
 		onSelect(modelId);
 		isOpen = false;
 		searchQuery = '';
@@ -78,7 +114,7 @@
 		class="w-full px-4 py-2 text-left bg-[var(--bg-tertiary)] border border-[var(--border-primary)] rounded-xl hover:border-[var(--accent-primary)]/50 focus:outline-none focus:ring-2 focus:ring-[var(--accent-primary)] transition"
 	>
 		<div class="flex items-center justify-between">
-			<span class="text-sm text-[var(--text-primary)]">{getModelName(selectedModel)}</span>
+			<span class="text-sm text-[var(--text-primary)]">{summary}</span>
 			<svg
 				class="w-5 h-5 text-[var(--text-muted)] transition-transform {isOpen ? 'rotate-180' : ''}"
 				fill="none"
@@ -105,6 +141,15 @@
 					class="w-full px-3 py-2 text-sm bg-[var(--bg-tertiary)] border border-[var(--border-primary)] text-[var(--text-primary)] placeholder-[var(--text-muted)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--accent-primary)]"
 					autofocus
 				/>
+				{#if multi}
+					<p class="text-xs text-[var(--text-muted)] mt-2">
+						{#if pool.length > 1}
+							{pool.length} selected — one is picked at random for each message.
+						{:else}
+							Pick several to have a model chosen at random each message.
+						{/if}
+					</p>
+				{/if}
 			</div>
 
 			<!-- Models List -->
@@ -118,8 +163,9 @@
 						<button
 							type="button"
 							onclick={() => selectModel(model.id)}
-							class="w-full px-4 py-3 text-left hover:bg-[var(--bg-tertiary)] border-b border-[var(--border-primary)] last:border-b-0 transition-colors {selectedModel ===
-							model.id
+							class="w-full px-4 py-3 text-left hover:bg-[var(--bg-tertiary)] border-b border-[var(--border-primary)] last:border-b-0 transition-colors {isActive(
+								model.id
+							)
 								? 'bg-[var(--accent-primary)]/10'
 								: ''}"
 						>
@@ -135,7 +181,7 @@
 										<span>Context: {model.contextLength.toLocaleString()}</span>
 									</div>
 								</div>
-								{#if selectedModel === model.id}
+								{#if isActive(model.id)}
 									<svg
 										class="w-5 h-5 text-[var(--accent-primary)] flex-shrink-0 ml-2"
 										fill="currentColor"

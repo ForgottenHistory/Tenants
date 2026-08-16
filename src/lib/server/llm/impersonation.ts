@@ -5,7 +5,7 @@ import { lorebookService } from '../services/lorebookService';
 import { worldInfoService } from '../services/worldInfoService';
 import { logger } from '../utils/logger';
 import type { Message, Character, LlmSettings } from '../db/schema';
-import type { LlmSettingsData } from '../services/llmSettingsFileService';
+import { llmSettingsFileService, type LlmSettingsData } from '../services/llmSettingsFileService';
 import type { ImpersonateStyle } from '$lib/types/chat';
 import {
 	loadImpersonatePromptFromFile,
@@ -88,6 +88,9 @@ export async function generateImpersonation(
 	const templateVariables = {
 		char: character.name || 'Character',
 		user: userName,
+		// Impersonation writes AS the player, so who they are matters more here
+		// than anywhere else.
+		user_description: userInfo.description || '',
 		personality: characterData.personality || '',
 		scenario: scenarioOverride || characterData.scenario || '',
 		description: character.description || characterData.description || '',
@@ -127,10 +130,12 @@ export async function generateImpersonation(
 		userName
 	);
 
+	const requestModel = llmSettingsFileService.resolveModel(settings as LlmSettingsData);
+
 	logger.info(`Generating impersonation (${style})`, {
 		character: character.name,
 		user: userName,
-		model: settings.model,
+		model: requestModel,
 		style,
 		messageCount: formattedMessages.length
 	});
@@ -138,7 +143,7 @@ export async function generateImpersonation(
 	// Call LLM service with settings
 	const response = await llmService.createChatCompletion({
 		messages: formattedMessages,
-		model: settings.model,
+		model: requestModel,
 		temperature: settings.temperature,
 		maxTokens: settings.maxTokens
 	});

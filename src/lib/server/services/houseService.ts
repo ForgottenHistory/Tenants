@@ -1,11 +1,25 @@
 import { db } from '../db';
-import { houses, bedrooms, sharedSpaces, tenants, characters } from '../db/schema';
+import {
+	houses,
+	bedrooms,
+	sharedSpaces,
+	tenants,
+	characters,
+	applicants,
+	occupancy,
+	scenes,
+	threads,
+	conversations,
+	relations,
+	houseEvents
+} from '../db/schema';
 import { eq, and, desc, lte } from 'drizzle-orm';
 import type { House, Bedroom, SharedSpace } from '../db/schema';
 import { DEFAULT_BASE_RENT, DEFAULT_STARTING_BALANCE } from '$lib/house/spacePresets';
 import { nextPhase } from '$lib/house/phases';
 import { occupancyService } from './occupancyService';
 import { satisfactionService, type SatisfactionChange } from './satisfactionService';
+import { relationService, type RelationEventResult } from './relationService';
 
 export interface HouseSummary {
 	house: House;
@@ -183,6 +197,7 @@ class HouseService {
 		rolledOver: boolean;
 		movedOut: Array<{ tenantId: number; characterName: string }>;
 		satisfactionChanges: SatisfactionChange[];
+		relationEvents: RelationEventResult[];
 	}> {
 		const house = await this.getHouseById(houseId, userId);
 		if (!house) throw new Error('House not found');
@@ -198,14 +213,22 @@ class HouseService {
 			// a missed promise should be able to sour someone on the same day their
 			// lease comes up, not the day after.
 			satisfactionChanges.push(...(await satisfactionService.chargeBrokenPromises(houseId, next.day)));
-			satisfactionChanges.push(...(await satisfactionService.applyDailyDrift(houseId)));
+			satisfactionChanges.push(
+				...(await satisfactionService.applyDailyDrift(houseId, next.day, userId))
+			);
 
 			// Leases are checked once per day, not per phase, so a lease ends on
 			// a day rather than at some arbitrary hour.
 			const expiring = await db
-				.select({ id: tenants.id, name: characters.name })
+				.select({
+					id: tenants.id,
+					characterId: tenants.characterId,
+					name: characters.name,
+					roomName: bedrooms.name
+				})
 				.from(tenants)
 				.innerJoin(characters, eq(tenants.characterId, characters.id))
+				.leftJoin(bedrooms, eq(tenants.bedroomId, bedrooms.id))
 				.where(
 					and(
 						eq(tenants.houseId, houseId),
@@ -220,6 +243,18 @@ class HouseService {
 					.set({ status: 'moved_out', moveOutDay: next.day, bedroomId: null })
 					.where(eq(tenants.id, row.id));
 				movedOut.push({ tenantId: row.id, characterName: row.name });
+
+				// A lease running out empties a room just as visibly as walking out
+				// does, so it belongs in the house's history too.
+				await relationService.recordTenancyEvent(
+					houseId,
+					next.day,
+					next.phase,
+					'move_out',
+					row.characterId,
+					row.name,
+					row.roomName
+				);
 			}
 		}
 
@@ -232,7 +267,17 @@ class HouseService {
 		// Place everyone for the phase we just moved into.
 		await occupancyService.generateForPhase(houseId, next.day, next.phase);
 
-		return { house: updated, rolledOver, movedOut, satisfactionChanges };
+		// The house keeps living while the player is elsewhere: housemates get on
+		// with each other between phases. Rolled after placement so the events
+		// belong to the phase being entered, not the one just left.
+		const relationEvents = await relationService.generateForPhase(
+			houseId,
+			next.day,
+			next.phase,
+			userId
+		);
+
+		return { house: updated, rolledOver, movedOut, satisfactionChanges, relationEvents };
 	}
 
 	/** Switch which house the player is in. Others become paused saves. */
@@ -249,6 +294,64 @@ class HouseService {
 			const [updated] = tx
 				.update(houses)
 				.set({ isActive: true, updatedAt: new Date() })
+				.where(eq(houses.id, houseId))
+				.returning()
+				.all();
+
+			return updated;
+		});
+	}
+
+	/**
+	 * Wipe a house back to move-in day: day 1, first phase, starting balance,
+	 * nobody living here.
+	 *
+	 * The rooms survive — the property is what you built, and rebuilding it to
+	 * play again would be busywork. Everything that accumulated *inside* it goes:
+	 * tenancies (including moved-out history, since day 1 has no past),
+	 * applicants, placements, scenes and threads.
+	 *
+	 * Scene conversations are deleted explicitly. `scenes` cascades from the
+	 * house, but the `conversations` rows it points at do not, so dropping the
+	 * scenes alone would leave orphaned transcripts sitting in chat history with
+	 * no room and no clock to reach them by.
+	 */
+	async resetHouse(houseId: number, userId: number): Promise<House | null> {
+		const house = await this.getHouseById(houseId, userId);
+		if (!house) return null;
+
+		// Collected before the transaction: the scene rows are about to go, and
+		// with them the only pointer to their conversations.
+		const sceneConversations = await db
+			.select({ conversationId: scenes.conversationId })
+			.from(scenes)
+			.where(eq(scenes.houseId, houseId));
+
+		return db.transaction((tx) => {
+			// Order matters only for the conversations, which nothing cascades
+			// from the house; the rest are house-scoped deletes.
+			tx.delete(threads).where(eq(threads.houseId, houseId)).run();
+			tx.delete(scenes).where(eq(scenes.houseId, houseId)).run();
+
+			for (const row of sceneConversations) {
+				// Messages and sceneParticipants cascade from the conversation.
+				tx.delete(conversations).where(eq(conversations.id, row.conversationId)).run();
+			}
+
+			tx.delete(houseEvents).where(eq(houseEvents.houseId, houseId)).run();
+			tx.delete(relations).where(eq(relations.houseId, houseId)).run();
+			tx.delete(occupancy).where(eq(occupancy.houseId, houseId)).run();
+			tx.delete(applicants).where(eq(applicants.houseId, houseId)).run();
+			tx.delete(tenants).where(eq(tenants.houseId, houseId)).run();
+
+			const [updated] = tx
+				.update(houses)
+				.set({
+					day: 1,
+					phase: 0,
+					balance: DEFAULT_STARTING_BALANCE,
+					updatedAt: new Date()
+				})
 				.where(eq(houses.id, houseId))
 				.returning()
 				.all();

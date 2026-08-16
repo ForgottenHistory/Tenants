@@ -73,6 +73,40 @@ export function clampSatisfaction(value: number): number {
 	return Math.max(SATISFACTION.MIN, Math.min(SATISFACTION.MAX, Math.round(value)));
 }
 
+/**
+ * What actually went wrong when the daily drift fires.
+ *
+ * The drift used to record "something around the house", which meant a tenant
+ * lost satisfaction over nothing nameable — and since the reason never reached
+ * the prompt, mentioning it to them got a blank look. These are concrete enough
+ * for a character to raise unprompted and for the player to do something about.
+ *
+ * Written from the tenant's point of view, since that is how they land in the
+ * prompt: "the shower runs cold" not "shower is broken".
+ */
+export const HOUSE_GRIPES = [
+	'the shower keeps running cold',
+	'a tap has started dripping and nobody has looked at it',
+	'the heating is uneven — some rooms never warm up',
+	'the wifi keeps dropping out',
+	'a window latch is loose and rattles in the wind',
+	'the kitchen bin is overflowing again',
+	'there is damp starting in one corner',
+	'a light fitting flickers and nobody has changed it',
+	'the front door sticks and needs shoving',
+	'the fridge is making a noise at night',
+	'a radiator is cold no matter what the thermostat says',
+	'the bathroom lock does not catch properly',
+	'the stairs creak badly enough to wake people',
+	'the hot water runs out if two people shower',
+	'a drain is slow and starting to smell'
+] as const;
+
+/** Pick a gripe at random. */
+export function randomGripe(): string {
+	return HOUSE_GRIPES[Math.floor(Math.random() * HOUSE_GRIPES.length)];
+}
+
 /** Satisfaction bands, used for roster display and (later) renewal decisions. */
 export function satisfactionLabel(value: number): string {
 	if (value >= 80) return 'Happy';
@@ -80,6 +114,31 @@ export function satisfactionLabel(value: number): string {
 	if (value >= 40) return 'Restless';
 	if (value >= 20) return 'Unhappy';
 	return 'Miserable';
+}
+
+/**
+ * Satisfaction as a sentence for the prompt, rather than the one-word band the
+ * UI shows.
+ *
+ * Deliberately about **living here**, not about the landlord personally — the
+ * same distinction the whole satisfaction system rests on. Phrased as how they
+ * feel and how they'd behave, because a bare number or label gives a model
+ * nothing to act on.
+ */
+export function satisfactionMood(value: number): string {
+	if (value >= 80) {
+		return 'They are happy living here and have no complaints worth raising.';
+	}
+	if (value >= 60) {
+		return 'They are content enough here, with nothing serious on their mind.';
+	}
+	if (value >= 40) {
+		return 'They are restless about the place — willing to say so if asked directly.';
+	}
+	if (value >= 20) {
+		return 'They are unhappy with the state of the place and will not hide it if it comes up.';
+	}
+	return 'They are miserable here and close to giving up on the place; it colours everything they say.';
 }
 
 /** CSS custom property to colour a satisfaction value with. */

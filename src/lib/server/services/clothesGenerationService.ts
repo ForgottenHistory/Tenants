@@ -281,7 +281,7 @@ Guidelines:
 		const charDescriptions = characters.map(c => `${c.name}: ${c.description}`).join('\n');
 
 		// Build output format for each character
-		const outputFormats = characters.map(c => `${c.name}:\nmood: [1-3 words]\nthinking: [inner monologue, can be expressive]\nposition: [location, posture]\nclothes:\n- [item]: [color/style keywords]\nbody:\n- [feature]: [brief description]`).join('\n\n');
+		const outputFormats = characters.map(c => `${c.name}:\nmood: [1-3 words]\nthinking: [one or two sentences, first person]\nposition: [posture and placement in the room]\nclothes:\n- [item]: [color/style keywords]\nbody:\n- [feature]: [brief description]`).join('\n\n');
 
 		// Build a custom prompt for multiple characters
 		return `Generate the current state for each character present in the scene.
@@ -305,17 +305,26 @@ ${outputFormats}
 ${userName}:
 position: [location, posture]
 
-Guidelines:
-- Keep values SHORT - use keywords, not sentences (except thinking)
-- Mood: 1-3 emotion words (cheerful, anxious, relaxed)
-- Thinking: Character's inner voice, can be expressive/conversational
-- Position: Location + posture, comma-separated
-- Clothes: 3-5 items, one per line starting with "- ", color/style keywords only
-- Body: 2-4 features, one per line starting with "- ", descriptive keywords
-- NO prose for objective fields (mood, position, clothes, body)
-- Base state on conversation context
-- If previous state is provided, use it as a baseline and only change what the conversation warrants
-- Output state for ALL characters listed above`;
+Rules:
+- Output EVERY field listed above for EVERY character, in that order. Never skip one.
+- mood: 1-3 emotion words. No sentences.
+- thinking: their inner voice, first person, MAXIMUM two sentences. This is a
+  passing thought, not a monologue — do not explain their whole situation or
+  argue with themselves at length.
+- position: how they are holding themselves and where they are in the room —
+  "leaning against the counter", "sat sideways on the sofa, one leg up". The
+  room itself is already known, so do NOT answer with just a room name.
+- clothes: 3-5 items, one per line starting with "- ", keywords only. What they
+  are wearing RIGHT NOW, which is often not the outfit in their description —
+  that is their typical look, not a uniform they never take off. Dress them for
+  the hour and the situation: sleepwear or underwear if they are in bed or just
+  woke up, a towel or robe if they just showered, something comfortable at home
+  in the evening. Nobody sleeps in heels, a leotard, armour or a formal dress.
+  If the conversation says what they are wearing, that always wins.
+- body: 2-4 features, one per line starting with "- ", keywords only.
+- Base everything on the conversation and scenario above — especially the time
+  of day and what they are doing in it.
+- If previous state is provided, use it as a baseline and only change what the conversation warrants`;
 	}
 
 	/**

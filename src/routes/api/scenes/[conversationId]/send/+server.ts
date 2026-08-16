@@ -8,6 +8,48 @@ import { personaService } from '$lib/server/services/personaService';
 import { sceneService } from '$lib/server/services/sceneService';
 import { llmSettingsFileService } from '$lib/server/services/llmSettingsFileService';
 
+/**
+ * The first character named in the message, or null if nobody is.
+ *
+ * "First" is by position in the text, not by roster order — "I asked Okayu but
+ * Zara said no" is addressed at Okayu. Matching is whole-word and
+ * case-insensitive so a name inside another word can't trigger it, and each
+ * name's first token is accepted too, since people write "Nicole" rather than
+ * "Nicole Demara" in conversation.
+ */
+function findFirstNamed<T extends { id: number; name: string }>(
+	message: string,
+	present: T[]
+): T | null {
+	const haystack = message.toLowerCase();
+	let best: { index: number; character: T } | null = null;
+
+	for (const character of present) {
+		// Longest first: for "Nicole Demara" prefer the full name's position, but
+		// still match a bare "Nicole".
+		const aliases = [character.name, character.name.split(/\s+/)[0]]
+			.map((a) => a.trim().toLowerCase())
+			.filter(Boolean);
+
+		for (const alias of aliases) {
+			// Word boundaries via lookaround rather than \b, which treats accented
+			// and non-latin characters as boundaries and would break those names.
+			const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+			const match = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?:[^\\p{L}\\p{N}]|$)`, 'u').exec(
+				haystack
+			);
+			if (!match) continue;
+
+			const index = match.index;
+			if (!best || index < best.index) {
+				best = { index, character };
+			}
+		}
+	}
+
+	return best?.character ?? null;
+}
+
 // POST /api/scenes/[conversationId]/send - Send a message in a room scene.
 //
 // The character-keyed /api/chat/[characterId]/send resolves "the active
@@ -28,7 +70,11 @@ export const POST: RequestHandler = async ({ params, request, cookies }) => {
 	try {
 		const { message, speakerId } = await request.json();
 
-		if (!message || !message.trim()) {
+		// An empty message is valid when a speaker is named: that is "let this
+		// character say something", nudging them to speak without the player
+		// putting words in first. Without a speaker there is nothing to act on.
+		const text = typeof message === 'string' ? message.trim() : '';
+		if (!text && !speakerId) {
 			return json({ error: 'Message is required' }, { status: 400 });
 		}
 
@@ -44,42 +90,50 @@ export const POST: RequestHandler = async ({ params, request, cookies }) => {
 			return json({ error: 'Conversation not found' }, { status: 404 });
 		}
 
-		const userInfo = await personaService.getActiveUserInfo(parseInt(userId));
+		// Only record a player turn when they actually said something. Prompting
+		// a character to speak is not the player speaking, and a blank user
+		// message would pollute the transcript and every summary built from it.
+		if (text) {
+			const userInfo = await personaService.getActiveUserInfo(parseInt(userId));
 
-		const [userMessage] = await db
-			.insert(messages)
-			.values({
-				conversationId,
-				role: 'user',
-				content: message.trim(),
-				senderName: userInfo.name,
-				senderAvatar: userInfo.avatarData
-			})
-			.returning();
+			const [userMessage] = await db
+				.insert(messages)
+				.values({
+					conversationId,
+					role: 'user',
+					content: text,
+					senderName: userInfo.name,
+					senderAvatar: userInfo.avatarData
+				})
+				.returning();
 
-		emitMessage(conversationId, userMessage);
-
-		// In a room with several people, the caller may name who should answer.
-		// Falling back to the scene's primary keeps single-occupant rooms simple.
-		let character = null;
-		if (speakerId) {
-			const inScene = await sceneService.isCharacterInScene(conversationId, speakerId);
-			if (inScene) {
-				const [named] = await db
-					.select()
-					.from(characters)
-					.where(eq(characters.id, speakerId))
-					.limit(1);
-				character = named ?? null;
-			}
+			emitMessage(conversationId, userMessage);
 		}
 
-		if (!character) {
-			character = await sceneService.getPrimaryCharacter(conversationId);
-		}
-
-		if (!character) {
+		// Who answers, in priority order:
+		//   1. An explicit `speakerId` — scene actions target a named character.
+		//   2. The first character NAMED in the message. Saying "Zara, can you
+		//      look at the sink?" in a room with three people should get Zara,
+		//      not whoever happens to be primary.
+		//   3. Random among those present, so a room without a name addressed
+		//      doesn't always answer in the same voice.
+		const present = await sceneService.getActiveCharacters(conversationId);
+		if (present.length === 0) {
 			return json({ error: 'Nobody is here to answer' }, { status: 409 });
+		}
+
+		let character: (typeof present)[number] | null = null;
+
+		if (speakerId) {
+			character = present.find((c) => c.id === speakerId) ?? null;
+		}
+
+		if (!character && text) {
+			character = findFirstNamed(text, present);
+		}
+
+		if (!character) {
+			character = present[Math.floor(Math.random() * present.length)];
 		}
 
 		const conversationHistory = await db

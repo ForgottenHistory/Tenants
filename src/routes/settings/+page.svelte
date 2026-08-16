@@ -17,6 +17,9 @@
 	const defaultLlmSettings = {
 		provider: 'openrouter',
 		model: 'anthropic/claude-3.5-sonnet',
+		// Empty means "just use `model`". Two or more entries makes each request
+		// draw one at random.
+		models: [] as string[],
 		temperature: 0.7,
 		maxTokens: 500,
 		topP: 1.0,
@@ -213,7 +216,10 @@
 			frequencyPenalty: preset.frequencyPenalty,
 			presencePenalty: preset.presencePenalty,
 			contextWindow: preset.contextWindow,
-			reasoningEnabled: preset.reasoningEnabled ?? false
+			reasoningEnabled: preset.reasoningEnabled ?? false,
+			// A preset names one model, so applying it clears any pool — otherwise
+			// the leftover pool would silently override the model just loaded.
+			models: [] as string[]
 		};
 
 		// Apply preset to the currently active tab's settings

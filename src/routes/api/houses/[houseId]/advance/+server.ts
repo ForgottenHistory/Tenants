@@ -23,14 +23,25 @@ export const POST: RequestHandler = async ({ cookies, params }) => {
 		const result = await houseService.advancePhase(houseId, parseInt(userId));
 
 		// The phase just ended, so every scene in it is now immutable and can be
-		// condensed exactly once. Deliberately NOT awaited: the clock should move
-		// the instant the player clicks, with summaries filling in behind it. A
-		// summary that fails or lags is picked up on the next advance.
-		houseSceneService
-			.summariseFinishedScenes(houseId, parseInt(userId))
-			.catch((error) => console.error('Scene summarisation failed:', error));
+		// condensed exactly once.
+		//
+		// Awaited, unlike the original fire-and-forget: `recallFor()` reads
+		// `scenes.summary`, so returning before the write lands means walking
+		// straight back into a room and finding the character has forgotten the
+		// conversation you just had. Waiting a few seconds is better than the
+		// house quietly losing its memory.
+		//
+		// Still fault-tolerant: a failure leaves `summary` null and the next
+		// advance picks it up, so a bad Content LLM call costs a summary rather
+		// than blocking the clock.
+		let summarised = 0;
+		try {
+			summarised = await houseSceneService.summariseFinishedScenes(houseId, parseInt(userId));
+		} catch (error) {
+			console.error('Scene summarisation failed:', error);
+		}
 
-		return json(result);
+		return json({ ...result, summarised });
 	} catch (error) {
 		console.error('Failed to advance phase:', error);
 		const message = error instanceof Error ? error.message : 'Failed to advance phase';

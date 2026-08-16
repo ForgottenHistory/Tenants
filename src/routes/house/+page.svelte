@@ -4,6 +4,8 @@
 	import MainLayout from '$lib/components/MainLayout.svelte';
 	import SpaceActivitiesModal from '$lib/components/house/SpaceActivitiesModal.svelte';
 	import HouseAgendaPanel from '$lib/components/house/HouseAgendaPanel.svelte';
+	import HouseLifePanel from '$lib/components/house/HouseLifePanel.svelte';
+	import RelationDetailModal from '$lib/components/house/RelationDetailModal.svelte';
 	import { phaseLabel, PHASES_PER_DAY, weekdayLabel, isWeekend } from '$lib/house/phases';
 	import { satisfactionLabel, satisfactionColor } from '$lib/house/tenancy';
 
@@ -18,8 +20,55 @@
 	let isEmpty = $derived(data.tenants.length === 0);
 
 	let advancing = $state(false);
+	// The pair whose history is open, or null. Clicking a row in "Between Them"
+	// answers "why are these two like this" from the event log.
+	let openRelation = $state<{
+		characterAId: number;
+		characterBId: number;
+		characterAName: string;
+		characterBName: string;
+		score: number;
+	} | null>(null);
 	let notice = $state<string | null>(null);
 	let error = $state<string | null>(null);
+	let closingId = $state<number | null>(null);
+
+	/**
+	 * Settle an outstanding item from the Needs You panel.
+	 *
+	 * The summariser closes threads it spots being resolved in conversation, but
+	 * it misses some and never sees anything handled off-screen. This is the
+	 * reliable way to clear one — and for a promise, the way to stop it charging
+	 * an overdue penalty every day.
+	 */
+	async function closeThread(threadId: number, outcome: 'resolved' | 'dropped') {
+		if (closingId !== null) return;
+		closingId = threadId;
+		error = null;
+
+		try {
+			const response = await fetch(`/api/houses/${house.id}/threads/${threadId}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ outcome })
+			});
+
+			if (!response.ok) {
+				const result = await response.json().catch(() => ({}));
+				error = result.error ?? 'Failed to close that';
+				return;
+			}
+
+			await invalidateAll();
+		} catch {
+			error = 'Network error. Please try again.';
+		} finally {
+			closingId = null;
+		}
+	}
+	let offscreen = $state<
+		Array<{ text: string; delta: number; characterAName: string; characterBName: string }>
+	>([]);
 
 	function inSpace(spaceId: number) {
 		return data.presence.bySpace[spaceId] ?? [];
@@ -137,6 +186,7 @@
 		advancing = true;
 		error = null;
 		notice = null;
+		offscreen = [];
 
 		try {
 			const response = await fetch(`/api/houses/${house.id}/advance`, { method: 'POST' });
@@ -154,10 +204,13 @@
 					(c: { before: number; after: number }) => c.after < c.before
 				);
 				if (drops.length > 0) {
+					// The reason is now a full clause ("the shower keeps running
+					// cold"), so it reads as the complaint itself rather than being
+					// slotted after "unhappy about".
 					notice = drops
 						.map(
 							(c: { characterName: string; reason: string }) =>
-								`${c.characterName} is unhappy about ${c.reason}.`
+								`${c.characterName} mentions ${c.reason}.`
 						)
 						.join(' ');
 				}
@@ -173,6 +226,11 @@
 				// the other.
 				notice = notice ? `${notice} ${moveOut}` : moveOut;
 			}
+
+			// What the housemates got up to while the player was elsewhere. Kept
+			// separate from `notice` so it reads as a list of moments rather than
+			// being run together with lease and satisfaction news.
+			offscreen = result.relationEvents ?? [];
 
 			// The switcher in the top bar shows day/phase too.
 			window.dispatchEvent(new CustomEvent('houseUpdated'));
@@ -223,9 +281,12 @@
 							<button
 								onclick={advance}
 								disabled={advancing}
-								class="btn-primary-solid px-5 py-2.5 text-lg whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
+								class="btn-primary-solid px-5 py-2.5 text-lg whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-2"
 							>
 								{#if advancing}
+									<div
+										class="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"
+									></div>
 									Advancing…
 								{:else if isLastPhase}
 									End Day &rarr;
@@ -275,6 +336,28 @@
 					class="mb-6 p-4 rounded-xl border border-[var(--accent-primary)]/40 bg-[var(--accent-primary)]/10 text-[var(--text-primary)] text-sm"
 				>
 					{notice}
+				</div>
+			{/if}
+
+			<!-- What happened between housemates while you were elsewhere -->
+			{#if offscreen.length > 0}
+				<div
+					class="mb-6 p-4 rounded-xl border border-[var(--border-primary)] bg-[var(--bg-secondary)]"
+				>
+					<p class="text-xs uppercase tracking-[0.15em] text-[var(--text-muted)] mb-3">
+						While you were away
+					</p>
+					<ul class="space-y-1.5">
+						{#each offscreen as event, i (i)}
+							<li class="flex items-start gap-2 text-sm text-[var(--text-secondary)]">
+								<span
+									class="mt-1.5 w-1.5 h-1.5 rounded-full flex-shrink-0"
+									style="background: {event.delta >= 0 ? 'var(--success)' : 'var(--error)'}"
+								></span>
+								<span>{event.text}</span>
+							</li>
+						{/each}
+					</ul>
 				</div>
 			{/if}
 
@@ -486,12 +569,22 @@
 			{/if}
 				</div>
 
-				<HouseAgendaPanel
-					day={house.day}
-					openThreads={data.openThreads}
-					expiring={data.expiring}
-					onFind={findCharacter}
-				/>
+				<div class="w-full lg:w-80 flex-shrink-0 flex flex-col gap-5 self-start">
+					<HouseAgendaPanel
+						day={house.day}
+						openThreads={data.openThreads}
+						expiring={data.expiring}
+						onFind={findCharacter}
+						onClose={closeThread}
+						{closingId}
+					/>
+					<HouseLifePanel
+						events={data.houseEvents}
+						relations={data.relations}
+						sceneSummaries={data.sceneSummaries}
+						onOpenRelation={(rel) => (openRelation = rel)}
+					/>
+				</div>
 			</div>
 		</div>
 	</div>
@@ -514,10 +607,37 @@
 		</div>
 	{/if}
 
+	<!-- Advancing waits for the phase's scenes to be summarised, which is a
+	     Content LLM call per conversation. Without an overlay the page just sits
+	     there looking broken for several seconds. -->
+	{#if advancing}
+		<div
+			class="fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-primary)]/85 backdrop-blur-sm"
+		>
+			<div class="text-center">
+				<div
+					class="w-10 h-10 mx-auto mb-5 rounded-full border-2 border-[var(--accent-primary)] border-t-transparent animate-spin"
+				></div>
+				<p class="text-lg font-medium text-[var(--text-primary)]">
+					{isLastPhase ? 'Ending the day…' : 'Time passes…'}
+				</p>
+				<p class="text-sm text-[var(--text-muted)] mt-1.5">
+					Everyone moves on, and what happened is remembered
+				</p>
+			</div>
+		</div>
+	{/if}
+
 	<SpaceActivitiesModal
 		houseId={house.id}
 		space={editingSpace}
 		onClose={() => (editingSpace = null)}
 		onSaved={() => invalidateAll()}
+	/>
+
+	<RelationDetailModal
+		houseId={house.id}
+		relation={openRelation}
+		onClose={() => (openRelation = null)}
 	/>
 </MainLayout>

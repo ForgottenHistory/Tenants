@@ -504,8 +504,10 @@ Output ONLY comma-separated tags, no explanations.`
 		chat: [
 			{ name: '{{char}}', description: 'Character name' },
 			{ name: '{{user}}', description: 'Your display name' },
+			{ name: '{{user_description}}', description: 'Your persona or profile bio' },
 			{ name: '{{description}}', description: 'Character description' },
 			{ name: '{{personality}}', description: 'Character personality' },
+			{ name: '{{example_dialogue}}', description: 'Character card example messages' },
 			{ name: '{{scenario}}', description: 'Roleplay scenario' },
 			{ name: '{{world}}', description: 'Formatted world state info' },
 			{ name: '{{history}}', description: 'Conversation history' },
@@ -515,6 +517,7 @@ Output ONLY comma-separated tags, no explanations.`
 		impersonate: [
 			{ name: '{{char}}', description: 'Character name' },
 			{ name: '{{user}}', description: 'Your display name' },
+			{ name: '{{user_description}}', description: 'Your persona or profile bio' },
 			{ name: '{{description}}', description: 'Character description' },
 			{ name: '{{world}}', description: 'Formatted world state info' },
 			{ name: '{{history}}', description: 'Conversation history' },

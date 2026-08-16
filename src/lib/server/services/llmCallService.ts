@@ -1,5 +1,6 @@
 import { queueService } from './queueService';
 import { llmLogService } from './llmLogService';
+import { llmSettingsFileService } from './llmSettingsFileService';
 import axios from 'axios';
 import { env } from '$env/dynamic/private';
 
@@ -8,6 +9,8 @@ interface LlmCallParams {
 	settings: {
 		provider: string;
 		model: string;
+		/** Optional pool; one is drawn per request. See `resolveModel`. */
+		models?: string[];
 		temperature: number;
 		maxTokens: number;
 		topP: number;
@@ -105,7 +108,9 @@ export async function callLlm({
 	}
 
 	const requestBody: any = {
-		model: settings.model,
+		// Drawn from the model pool when one is configured; falls back to the
+		// single `model` otherwise.
+		model: llmSettingsFileService.resolveModel(settings),
 		messages,
 		temperature: settings.temperature,
 		max_tokens: settings.maxTokens,

@@ -11,10 +11,17 @@
 		showCopy?: boolean;
 		showRewrite?: boolean;
 		rewriting?: boolean;
+		// Build this field from scratch out of another one. Unlike rewrite, it does
+		// not read the current value, so it stays enabled on an empty field — which
+		// is the case it exists for.
+		showGenerate?: boolean;
+		generating?: boolean;
+		generateTitle?: string;
 		mono?: boolean;
 		inputType?: 'textarea' | 'input';
 		onSave: (value: string) => Promise<void>;
 		onRewrite?: () => Promise<void>;
+		onGenerate?: () => Promise<void>;
 	}
 
 	let {
@@ -27,10 +34,14 @@
 		showCopy = true,
 		showRewrite = false,
 		rewriting = false,
+		showGenerate = false,
+		generating = false,
+		generateTitle = 'Generate with AI',
 		mono = false,
 		inputType = 'textarea',
 		onSave,
-		onRewrite
+		onRewrite,
+		onGenerate
 	}: Props = $props();
 
 	let resetting = $state(false);
@@ -94,6 +105,16 @@
 		}
 	}
 
+	async function handleGenerate() {
+		if (onGenerate) {
+			await onGenerate();
+			// Drop into edit mode so the result is reviewed before it's saved.
+			if (editValue) {
+				editing = true;
+			}
+		}
+	}
+
 	// Allow parent to set editValue for rewrite results
 	export function setEditValue(newValue: string) {
 		editValue = newValue;
@@ -127,6 +148,22 @@
 						{:else}
 							<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+							</svg>
+						{/if}
+					</button>
+				{/if}
+				{#if showGenerate && onGenerate}
+					<button
+						onclick={handleGenerate}
+						disabled={generating}
+						class="p-1.5 text-[var(--text-muted)] hover:text-[var(--accent-secondary)] hover:bg-[var(--accent-secondary)]/10 rounded-lg transition disabled:opacity-30 disabled:cursor-not-allowed"
+						title={generateTitle}
+					>
+						{#if generating}
+							<div class="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"></div>
+						{:else}
+							<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
 							</svg>
 						{/if}
 					</button>
@@ -201,6 +238,23 @@
 				>
 					{saving ? 'Saving...' : 'Save'}
 				</button>
+				{#if showGenerate && onGenerate}
+					<button
+						onclick={handleGenerate}
+						disabled={generating}
+						class="px-3 py-1.5 bg-[var(--bg-tertiary)] text-[var(--accent-secondary)] text-sm rounded-lg hover:bg-[var(--accent-secondary)]/10 transition disabled:opacity-50 flex items-center gap-1.5"
+					>
+						{#if generating}
+							<div class="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin"></div>
+							Generating...
+						{:else}
+							<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+							</svg>
+							Generate
+						{/if}
+					</button>
+				{/if}
 				{#if showRewrite && onRewrite}
 					<button
 						onclick={handleRewrite}
