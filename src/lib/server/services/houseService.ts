@@ -1,8 +1,11 @@
 import { db } from '../db';
-import { houses, bedrooms, sharedSpaces, tenants } from '../db/schema';
-import { eq, and, desc } from 'drizzle-orm';
+import { houses, bedrooms, sharedSpaces, tenants, characters } from '../db/schema';
+import { eq, and, desc, lte } from 'drizzle-orm';
 import type { House, Bedroom, SharedSpace } from '../db/schema';
 import { DEFAULT_BASE_RENT, DEFAULT_STARTING_BALANCE } from '$lib/house/spacePresets';
+import { nextPhase } from '$lib/house/phases';
+import { occupancyService } from './occupancyService';
+import { satisfactionService, type SatisfactionChange } from './satisfactionService';
 
 export interface HouseSummary {
 	house: House;
@@ -163,6 +166,73 @@ class HouseService {
 
 			return house;
 		});
+	}
+
+	/**
+	 * Advance the clock by one phase, rolling into the next day as needed.
+	 *
+	 * On a day rollover, leases that have reached their end day are settled:
+	 * those tenants move out and their rooms open up. Returns what happened so
+	 * the UI can report it rather than silently changing the roster.
+	 */
+	async advancePhase(
+		houseId: number,
+		userId: number
+	): Promise<{
+		house: House;
+		rolledOver: boolean;
+		movedOut: Array<{ tenantId: number; characterName: string }>;
+		satisfactionChanges: SatisfactionChange[];
+	}> {
+		const house = await this.getHouseById(houseId, userId);
+		if (!house) throw new Error('House not found');
+
+		const next = nextPhase(house.day, house.phase);
+		const rolledOver = next.day !== house.day;
+
+		const movedOut: Array<{ tenantId: number; characterName: string }> = [];
+		const satisfactionChanges: SatisfactionChange[] = [];
+
+		if (rolledOver) {
+			// Satisfaction moves on the day boundary, before leases are settled —
+			// a missed promise should be able to sour someone on the same day their
+			// lease comes up, not the day after.
+			satisfactionChanges.push(...(await satisfactionService.chargeBrokenPromises(houseId, next.day)));
+			satisfactionChanges.push(...(await satisfactionService.applyDailyDrift(houseId)));
+
+			// Leases are checked once per day, not per phase, so a lease ends on
+			// a day rather than at some arbitrary hour.
+			const expiring = await db
+				.select({ id: tenants.id, name: characters.name })
+				.from(tenants)
+				.innerJoin(characters, eq(tenants.characterId, characters.id))
+				.where(
+					and(
+						eq(tenants.houseId, houseId),
+						eq(tenants.status, 'active'),
+						lte(tenants.leaseEndDay, next.day)
+					)
+				);
+
+			for (const row of expiring) {
+				await db
+					.update(tenants)
+					.set({ status: 'moved_out', moveOutDay: next.day, bedroomId: null })
+					.where(eq(tenants.id, row.id));
+				movedOut.push({ tenantId: row.id, characterName: row.name });
+			}
+		}
+
+		const [updated] = await db
+			.update(houses)
+			.set({ day: next.day, phase: next.phase, updatedAt: new Date() })
+			.where(eq(houses.id, houseId))
+			.returning();
+
+		// Place everyone for the phase we just moved into.
+		await occupancyService.generateForPhase(houseId, next.day, next.phase);
+
+		return { house: updated, rolledOver, movedOut, satisfactionChanges };
 	}
 
 	/** Switch which house the player is in. Others become paused saves. */

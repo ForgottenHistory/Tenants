@@ -1,9 +1,13 @@
 <script lang="ts">
+	import type { House } from '$lib/server/db/schema';
+	import HouseSwitcher from './HouseSwitcher.svelte';
+
 	interface Props {
 		currentPath: string;
+		houses?: House[];
 	}
 
-	let { currentPath }: Props = $props();
+	let { currentPath, houses = [] }: Props = $props();
 
 	function isActive(path: string): boolean {
 		return currentPath === path;
@@ -119,8 +123,12 @@
 
 		</div>
 
-		<!-- Right: Logout -->
-		<div class="flex items-center gap-3">
+		<!-- Right: Current house + Logout -->
+		<div class="flex items-center gap-2">
+			<HouseSwitcher {houses} />
+
+			<div class="w-px h-8 bg-[var(--border-primary)]"></div>
+
 			<form method="POST" action="/api/auth/logout">
 				<button
 					type="submit"

@@ -5,6 +5,7 @@
 	import ProfileTabs from './character-profile/ProfileTabs.svelte';
 	import OverviewTab from './character-profile/tabs/OverviewTab.svelte';
 	import MessagesTab from './character-profile/tabs/MessagesTab.svelte';
+	import ActivitiesTab from './character-profile/tabs/ActivitiesTab.svelte';
 	import ImageTab from './character-profile/tabs/ImageTab.svelte';
 
 	interface Props {
@@ -45,7 +46,7 @@
 	const currentName = $derived(displayName ?? character?.name ?? '');
 	const currentTags = $derived(displayTags ?? baseTags);
 
-	let activeTab = $state<'overview' | 'messages' | 'image'>('overview');
+	let activeTab = $state<'overview' | 'messages' | 'activities' | 'image'>('overview');
 	let imagePreview = $state<string | null>(null);
 	let changingImage = $state(false);
 	let error = $state<string | null>(null);
@@ -99,6 +100,28 @@
 			error = 'Failed to save tags';
 		} finally {
 			saving = false;
+		}
+	}
+
+	async function handleActivityPoolsSave(pools: unknown) {
+		if (!character) return;
+
+		try {
+			const response = await fetch(`/api/characters/${character.id}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ activityPools: pools })
+			});
+
+			if (!response.ok) throw new Error('Failed to update activities');
+
+			character.activityPools = pools ? JSON.stringify(pools) : null;
+			success = 'Updated successfully!';
+			setTimeout(() => (success = ''), 3000);
+			onUpdate?.();
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Failed to update activities';
+			setTimeout(() => (error = ''), 5000);
 		}
 	}
 
@@ -280,6 +303,12 @@
 						<OverviewTab {character} data={currentData} {originalData} onSave={handleOverviewFieldSave} />
 					{:else if activeTab === 'messages'}
 						<MessagesTab data={currentData} {originalData} onSave={handleMessagesFieldSave} />
+					{:else if activeTab === 'activities'}
+						<ActivitiesTab
+							characterId={character.id}
+							activityPools={character.activityPools ?? null}
+							onSave={handleActivityPoolsSave}
+						/>
 					{:else if activeTab === 'image'}
 						<ImageTab
 							{character}

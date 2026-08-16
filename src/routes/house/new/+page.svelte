@@ -115,7 +115,10 @@
 				return;
 			}
 
-			await goto('/');
+			window.dispatchEvent(new CustomEvent('houseUpdated'));
+			// A new house is empty, and the next step is always finding someone to
+			// live in it — go straight there rather than via Home.
+			await goto('/house/tenants');
 		} catch {
 			error = 'Network error. Please try again.';
 		} finally {

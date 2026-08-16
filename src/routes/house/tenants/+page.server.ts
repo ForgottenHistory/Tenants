@@ -26,10 +26,9 @@ export const load: PageServerLoad = async ({ cookies }) => {
 		throw redirect(303, '/');
 	}
 
-	const [roster, vacantBedrooms, applicantList, libraryCount] = await Promise.all([
+	const [roster, vacantBedrooms, libraryCount] = await Promise.all([
 		tenantService.getActiveTenants(house.id),
 		tenantService.getVacantBedrooms(house.id),
-		tenantService.getApplicants(house.id),
 		db
 			.select({ id: characters.id })
 			.from(characters)
@@ -37,12 +36,13 @@ export const load: PageServerLoad = async ({ cookies }) => {
 			.then((rows) => rows.length)
 	]);
 
+	// Shortlists are drawn per room, on demand, when the player opens a vacancy —
+	// so there is nothing house-wide to load here.
 	return {
 		user,
 		house,
 		tenants: roster,
 		vacantBedrooms,
-		applicants: applicantList,
 		libraryCount
 	};
 };

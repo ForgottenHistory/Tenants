@@ -98,10 +98,11 @@
 		if (message) {
 			onSend(message);
 			input = '';
-			// Reset textarea height
-			if (textareaRef) {
-				textareaRef.style.height = 'auto';
-			}
+			// Shrink back down. Must go through resizeTextarea rather than setting
+			// height directly: the overlaid highlight div is sized separately, and
+			// leaving it tall keeps the whole bar stuck at the old height.
+			// Deferred a frame so the cleared value is in the DOM before measuring.
+			requestAnimationFrame(() => resizeTextarea());
 		} else if (onGenerate) {
 			onGenerate();
 		}

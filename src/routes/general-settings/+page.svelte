@@ -14,6 +14,7 @@
 	let randomNarrationMinMessages = $state(3);
 	let randomNarrationMaxMessages = $state(8);
 	let worldSidebarEnabled = $state(false);
+	let sceneRecallPercent = $state(15);
 	let autoWorldStateEnabled = $state(false);
 	let autoWorldStateMinMessages = $state(5);
 	let autoWorldStateMaxMessages = $state(12);
@@ -56,6 +57,7 @@
 				randomNarrationMinMessages = data.randomNarrationMinMessages ?? 3;
 				randomNarrationMaxMessages = data.randomNarrationMaxMessages ?? 8;
 				worldSidebarEnabled = data.worldSidebarEnabled ?? false;
+				sceneRecallPercent = data.sceneRecallPercent ?? 15;
 				autoWorldStateEnabled = data.autoWorldStateEnabled ?? false;
 				autoWorldStateMinMessages = data.autoWorldStateMinMessages ?? 5;
 				autoWorldStateMaxMessages = data.autoWorldStateMaxMessages ?? 12;
@@ -82,7 +84,7 @@
 				fetch('/api/settings', {
 					method: 'PUT',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor })
+					body: JSON.stringify({ chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor })
 				}),
 				fetch('/api/writing-style', {
 					method: 'PUT',
@@ -94,7 +96,7 @@
 			if (settingsRes.ok && writingStyleRes.ok) {
 				message = { type: 'success', text: 'Settings saved successfully!' };
 				// Dispatch event so chat components can react
-				window.dispatchEvent(new CustomEvent('settingsUpdated', { detail: { chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor } }));
+				window.dispatchEvent(new CustomEvent('settingsUpdated', { detail: { chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor } }));
 			} else {
 				const data = await settingsRes.json();
 				message = { type: 'error', text: data.error || 'Failed to save settings' };
@@ -470,6 +472,56 @@
 										</div>
 									</div>
 								{/if}
+							</div>
+						</div>
+
+						<!-- Scene Memory Section -->
+						<div>
+							<h2 class="text-lg font-semibold text-[var(--text-primary)] mb-4">Scene Memory</h2>
+							<p class="text-sm text-[var(--text-muted)] mb-4">
+								How much of the chat context window is spent reminding characters what
+								happened in earlier scenes
+							</p>
+
+							<div class="space-y-4">
+								<div class="p-4 rounded-xl border border-[var(--border-primary)]">
+									<div class="flex items-center justify-between gap-4 mb-2">
+										<div>
+											<p class="font-medium text-[var(--text-primary)]">Recall budget</p>
+											<p class="text-sm text-[var(--text-muted)] mt-1">
+												A share of the context window, so it scales when you change model.
+												Older scenes drop off first; the most recent is always kept.
+											</p>
+										</div>
+										<span
+											class="text-lg font-semibold text-[var(--accent-primary)] tabular-nums flex-shrink-0"
+										>
+											{sceneRecallPercent}%
+										</span>
+									</div>
+									<input
+										type="range"
+										min="0"
+										max="90"
+										step="5"
+										bind:value={sceneRecallPercent}
+										aria-label="Scene recall budget as a percentage of context window"
+										class="w-full accent-[var(--accent-primary)]"
+									/>
+									<div class="flex justify-between text-xs text-[var(--text-muted)] mt-1">
+										<span>Off</span>
+										<span>90%</span>
+									</div>
+									{#if sceneRecallPercent === 0}
+										<p class="text-xs text-[var(--warning)] mt-2">
+											Characters will not remember anything from earlier scenes.
+										</p>
+									{:else if sceneRecallPercent >= 60}
+										<p class="text-xs text-[var(--warning)] mt-2">
+											Leaves little room for the character card and the conversation itself.
+										</p>
+									{/if}
+								</div>
 							</div>
 						</div>
 

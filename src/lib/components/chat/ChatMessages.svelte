@@ -33,11 +33,6 @@
 		return Math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2);
 	}
 
-	// Filter palette to exclude colors too similar to the user's bubble color
-	const availableColors = $derived(
-		CHARACTER_COLORS.filter(c => colorDistance(c, userBubbleColor) > 80)
-	);
-
 	interface Props {
 		messages: Message[];
 		loading: boolean;
@@ -60,6 +55,13 @@
 	}
 
 	let { messages, loading, isTyping, generating, charName, userName, charAvatar, userAvatar, chatLayout = 'bubbles', avatarStyle = 'circle', textCleanupEnabled = true, autoWrapActions = false, userBubbleColor = '#e0a458', sceneCharacters, onSwipe, onSaveEdit, onDelete, onBranch }: Props = $props();
+
+	// Filter palette to exclude colors too similar to the user's bubble color.
+	// Must be declared AFTER $props(): a $derived that reads a prop before the
+	// binding exists throws "Cannot access before initialization" during SSR.
+	const availableColors = $derived(
+		CHARACTER_COLORS.filter(c => colorDistance(c, userBubbleColor) > 80)
+	);
 
 	// Build a stable color map: characterId → color, assigned in order of first appearance
 	// Also seeds from sceneCharacters so characters get colors before they speak

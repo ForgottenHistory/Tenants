@@ -48,7 +48,7 @@ export const PUT: RequestHandler = async ({ params, cookies, request }) => {
 
 	try {
 		const body = await request.json();
-		const { name, tags, description, cardData, imageTags, contextualTags, mainPromptOverride, negativePromptOverride, postHistory } = body;
+		const { name, tags, description, cardData, imageTags, contextualTags, mainPromptOverride, negativePromptOverride, postHistory, activityPools } = body;
 
 		// Build update object with only provided fields
 		const updateData: Record<string, any> = {};
@@ -63,6 +63,11 @@ export const PUT: RequestHandler = async ({ params, cookies, request }) => {
 		if (negativePromptOverride !== undefined) updateData.negativePromptOverride = negativePromptOverride;
 		// Post history
 		if (postHistory !== undefined) updateData.postHistory = postHistory;
+		// What they do in their room / while out, per phase. Stored as JSON;
+		// null clears it and falls back to the generic lists.
+		if (activityPools !== undefined) {
+			updateData.activityPools = activityPools ? JSON.stringify(activityPools) : null;
+		}
 
 		if (Object.keys(updateData).length === 0) {
 			return json({ error: 'No fields to update' }, { status: 400 });

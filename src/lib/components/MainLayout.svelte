@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { SafeUser, Character } from '$lib/server/db/schema';
+	import type { SafeUser, Character, House } from '$lib/server/db/schema';
 	import type { Snippet } from 'svelte';
 	import { onMount } from 'svelte';
 	import { getCharactersCache, setCharactersCache, isCharactersCacheLoaded } from '$lib/stores/characters';
@@ -47,6 +47,7 @@
 	let characters = $state<Character[]>(getCharactersCache());
 	let conversations = $state<ConversationInfo[]>(getConversationsCache());
 	let activePersona = $state<ActivePersonaInfo | null>(null);
+	let houses = $state<House[]>([]);
 
 	onMount(() => {
 		// Load sidebar collapsed state from localStorage
@@ -68,6 +69,9 @@
 		// Load active persona
 		loadActivePersona();
 
+		// Load houses for the top-bar switcher
+		loadHouses();
+
 		// Listen for character updates from other components
 		const handleCharacterUpdate = () => {
 			loadCharacters();
@@ -87,12 +91,32 @@
 		};
 		window.addEventListener('personaUpdated', handlePersonaUpdate);
 
+		// Keep the switcher current when a house is created, switched, or the
+		// day advances on a page that doesn't re-render the layout.
+		const handleHouseUpdate = () => {
+			loadHouses();
+		};
+		window.addEventListener('houseUpdated', handleHouseUpdate);
+
 		return () => {
 			window.removeEventListener('characterUpdated', handleCharacterUpdate);
 			window.removeEventListener('conversationUpdated', handleConversationUpdate);
 			window.removeEventListener('personaUpdated', handlePersonaUpdate);
+			window.removeEventListener('houseUpdated', handleHouseUpdate);
 		};
 	});
+
+	async function loadHouses() {
+		try {
+			const response = await fetch('/api/houses');
+			if (response.ok) {
+				const result = await response.json();
+				houses = result.houses || [];
+			}
+		} catch (error) {
+			console.error('Failed to load houses:', error);
+		}
+	}
 
 	async function loadActivePersona() {
 		try {
@@ -171,7 +195,7 @@
 		<!-- Main Content Area -->
 		<div class="flex-1 flex flex-col">
 			<!-- Top Navigation Bar -->
-			<TopNavBar {currentPath} />
+			<TopNavBar {currentPath} {houses} />
 
 			<!-- Page Content -->
 			<div class="flex-1 overflow-hidden">

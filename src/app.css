@@ -21,11 +21,14 @@
 	--border-primary: #262523;  /* dark border */
 	--border-secondary: #383630; /* lighter border */
 
-	/* Accent colors */
-	--accent-primary: #e0a458;  /* lamplight amber */
-	--accent-secondary: #c2703d; /* terracotta */
-	--accent-hover: #edb972;    /* bright amber hover */
-	--accent-user: #8fb08a;     /* sage green for user name */
+	/* Accent colors — pushed hot and saturated so they read as lit signage
+	   against the near-black base rather than as dimmed wood tones. Backgrounds
+	   and text stay neutral (see CLAUDE.md): the warmth belongs to the accent. */
+	--accent-primary: #ffab40;  /* hot amber */
+	--accent-secondary: #ff6b35; /* burnt orange */
+	--accent-hover: #ffc46b;    /* bright amber hover */
+	--accent-user: #7fd6a8;     /* mint — cool counterpoint to the amber */
+	--accent-glow: #ffab40;     /* used for shadows/rings on lit elements */
 
 	/* User message bubble */
 	--user-bubble-from: #9c6b34; /* deep amber */
@@ -99,18 +102,25 @@ body {
 	cursor: not-allowed;
 }
 
-/* Solid primary button - for important actions */
+/* Solid primary button - for important actions.
+   Uses the accents at full strength: mixing them toward black (as this did
+   before) turned every primary action into dull brown against the near-black
+   base. Dark text on a lit fill is what makes it read as illuminated. */
 .btn-primary-solid {
-	background: linear-gradient(to right, color-mix(in srgb, var(--accent-primary) 60%, black), color-mix(in srgb, var(--accent-secondary) 60%, black));
-	color: white;
-	font-weight: 500;
+	background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+	color: #1a1207;
+	font-weight: 600;
 	border-radius: 0.75rem;
 	border: none;
+	box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-primary) 50%, transparent),
+		0 4px 20px -4px color-mix(in srgb, var(--accent-glow) 45%, transparent);
 	transition: all 0.2s;
 }
 
 .btn-primary-solid:hover {
-	opacity: 0.9;
+	background: linear-gradient(135deg, var(--accent-hover), var(--accent-primary));
+	box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-hover) 70%, transparent),
+		0 6px 26px -4px color-mix(in srgb, var(--accent-glow) 65%, transparent);
 }
 
 .btn-primary-solid:disabled {

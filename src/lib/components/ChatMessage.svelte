@@ -257,9 +257,13 @@
 			// Insert a space where action/dialogue segments abut each other with
 			// no whitespace. Without this, *action*"dialogue"*action* renders as
 			// `action"dialogue"action` because the * markers vanish during styling.
+			//
+			// Only when the characters are genuinely adjacent — a blanket replace
+			// also rewrites `*emphasis*" ` inside dialogue, which shifts the quote
+			// and makes the pairing below span across an action block.
 			processed = processed
-				.replace(/\*"/g, '* "')
-				.replace(/"\*/g, '" *');
+				.replace(/\*"(?=\S)/g, '* "')
+				.replace(/(?<=\S)"\*/g, '" *');
 
 			// Normalize asterisks per line
 			processed = processed.split('\n').map(normalizeAsterisks).join('\n');
@@ -325,8 +329,20 @@
 			// Check if line is EXACTLY one action block (starts with *, ends with *, no other * pairs inside)
 			// Use a non-greedy match that ensures there's no closing * followed by space and opening *
 			const fullActionMatch = line.match(/^\*([^*]+(?:\*[^*]+\*[^*]*)*[^*]*)\*$/);
-			// Only treat as full-line action if line starts and ends with * AND there's no "* *" pattern (multiple actions)
-			if (fullActionMatch && !line.match(/\*\s+\*/)) {
+			// A line is ONE action only if nothing sits between its action blocks.
+			// The old check looked for `* *` (whitespace only), so a line like
+			// `*action* "speech" *action*` slipped through and collapsed into a
+			// single action with the dialogue nested inside — which is what removed
+			// the space after `ya."`. Dialogue is a placeholder by this point, so
+			// splitting on `*` and inspecting the gaps catches speech and plain
+			// text alike, and is far easier to reason about than a regex.
+			// Two separate actions on one line, rather than one action containing
+			// *emphasis*. Whitespace between them (`* *`) was already handled; a
+			// dialogue placeholder between them was not, so a line like
+			// `*action* "speech" *action*` collapsed into a single action with the
+			// speech nested inside — which is what removed the space after `ya."`.
+			const separateActions = /\*\s+\*/.test(line) || /\*[^*]*%%DIALOGUE_\d+%%[^*]*\*/.test(line);
+			if (fullActionMatch && !separateActions) {
 				const content = fullActionMatch[1];
 				// Process any inner asterisks as emphasis
 				const processedContent = processAsterisksInAction(content);

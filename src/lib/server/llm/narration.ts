@@ -283,8 +283,13 @@ export async function generateSceneNarration(
 	// Load narration prompt from file
 	const basePrompt = await loadNarrationPromptFromFile(narrateType);
 
+	// Scene intros are prose the player reads alongside chat messages, so they
+	// have to follow the same quote/asterisk convention as everything else.
+	const writingStyle = await loadWritingStyle();
+
 	// Replace template variables
 	let narratorPrompt = basePrompt
+		.replace(/\{\{writing_style\}\}/g, writingStyle)
 		.replace(/\{\{character_name\}\}/g, sceneContext?.characterName || '')
 		.replace(/\{\{character_names\}\}/g, sceneContext?.characterNames?.join(', ') || characterNames)
 		.replace(/\{\{character_descriptions\}\}/g, characterDescriptions)

@@ -23,6 +23,12 @@ export const users = sqliteTable('users', {
 	autoWorldStateEnabled: integer('auto_world_state_enabled', { mode: 'boolean' }).notNull().default(false),
 	autoWorldStateMinMessages: integer('auto_world_state_min_messages').notNull().default(5),
 	autoWorldStateMaxMessages: integer('auto_world_state_max_messages').notNull().default(12),
+	// How much of the prompt to spend recalling earlier scenes, as a PERCENT of
+	// the chat LLM's context window. Budgeted rather than counted: summaries vary
+	// wildly in length, so "the last N scenes" spends an unpredictable amount of
+	// context. Expressed as a share so it scales with the model rather than
+	// needing a retune every time the context window changes. 0 disables recall.
+	sceneRecallPercent: integer('scene_recall_percent').notNull().default(15),
 	// User message color customization
 	userBubbleColor: text('user_bubble_color').notNull().default('#e0a458'),
 	userTextColor: text('user_text_color').notNull().default('#ffffff'),
@@ -191,6 +197,12 @@ export const characters = sqliteTable('characters', {
 	mainPromptOverride: text('main_prompt_override'), // Override global main prompt
 	negativePromptOverride: text('negative_prompt_override'), // Override global negative prompt
 	postHistory: text('post_history'), // Character-specific post history text (appears after conversation history)
+	// What this character does in their own room, and what they do when out,
+	// per phase. JSON: { bedroom: { morning: string[], ... }, away: { ... } }.
+	// Lives on the character because every character has a room and can leave,
+	// in any house. Shared-space activities stay generic (see $lib/house/
+	// activities.ts) since spaces are defined per house.
+	activityPools: text('activity_pools'),
 	createdAt: integer('created_at', { mode: 'timestamp' })
 		.notNull()
 		.$defaultFn(() => new Date())
@@ -367,6 +379,11 @@ export const sharedSpaces = sqliteTable('shared_spaces', {
 	name: text('name').notNull(),
 	kind: text('kind').notNull(), // 'kitchen' | 'lounge' | 'yard' | 'utility' | 'other'
 	description: text('description'), // Used by the narrator when setting a scene here
+	// What tenants do in this space. JSON string[] — no phase keying, since what
+	// you do in a kitchen doesn't change much with the hour. Null falls back to
+	// the generic lines for this space's `kind` (see $lib/house/activities.ts).
+	// Lives on the space, not the character: the room belongs to the house.
+	activityPool: text('activity_pool'),
 	sortOrder: integer('sort_order').notNull().default(0),
 	tier: integer('tier').notNull().default(1), // 1-3, upgradeable
 	capacity: integer('capacity').notNull().default(4), // Soft cap on tenants present at once
@@ -400,6 +417,9 @@ export const tenants = sqliteTable('tenants', {
 	moveOutDay: integer('move_out_day'), // Set when they actually leave
 	rentAmount: real('rent_amount').notNull(),
 	satisfaction: integer('satisfaction').notNull().default(70), // 0-100, drives renewal
+	// Last day a scene with this tenant credited satisfaction. Talking twice in
+	// one day shouldn't farm the meter, so the gain is once per day.
+	lastTalkedDay: integer('last_talked_day'),
 	createdAt: integer('created_at', { mode: 'timestamp' })
 		.notNull()
 		.$defaultFn(() => new Date())
@@ -419,6 +439,12 @@ export const applicants = sqliteTable('applicants', {
 	characterId: integer('character_id')
 		.notNull()
 		.references(() => characters.id, { onDelete: 'cascade' }),
+	// Applicants apply for a SPECIFIC room, not the house in general: picking a
+	// tenant is a per-vacancy decision, and the shortlist is regenerated per room
+	// per day.
+	bedroomId: integer('bedroom_id')
+		.notNull()
+		.references(() => bedrooms.id, { onDelete: 'cascade' }),
 	pitch: text('pitch'), // Why they want the room. Director-written in Phase 6.
 	askingRent: real('asking_rent').notNull(),
 	requestedDays: integer('requested_days').notNull().default(30), // Lease length they want
@@ -428,8 +454,132 @@ export const applicants = sqliteTable('applicants', {
 		.$defaultFn(() => new Date())
 });
 
+/**
+ * Where every tenant is, for every phase of every day.
+ *
+ * One row per tenant per phase. Written by the scheduler now, by the House
+ * Director later — the interface is the same either way. Because it is an
+ * append-only log rather than a mutable pointer, house history comes free:
+ * "who was in the kitchen on day 12" is just a query.
+ *
+ * `placeKind` distinguishes the three things a tenant can be doing:
+ *   'bedroom' — in their own room (private; reachable)
+ *   'shared'  — in a shared space (public; where the game happens)
+ *   'away'    — out of the house entirely (unreachable this phase)
+ */
+export const occupancy = sqliteTable('occupancy', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	houseId: integer('house_id')
+		.notNull()
+		.references(() => houses.id, { onDelete: 'cascade' }),
+	tenantId: integer('tenant_id')
+		.notNull()
+		.references(() => tenants.id, { onDelete: 'cascade' }),
+	day: integer('day').notNull(),
+	phase: integer('phase').notNull(),
+	placeKind: text('place_kind').notNull(), // 'bedroom' | 'shared' | 'away'
+	bedroomId: integer('bedroom_id').references(() => bedrooms.id, { onDelete: 'cascade' }),
+	sharedSpaceId: integer('shared_space_id').references(() => sharedSpaces.id, {
+		onDelete: 'cascade'
+	}),
+	activity: text('activity'), // Short flavor line: "cooking", "on the phone"
+	createdAt: integer('created_at', { mode: 'timestamp' })
+		.notNull()
+		.$defaultFn(() => new Date())
+});
+
+/**
+ * A conversation pinned to a place and a moment in the house.
+ *
+ * Deliberately a join table rather than columns on `conversations`: the chat
+ * engine predates the house layer and works on conversations that have no room
+ * and no clock (library chats). Keeping the house keys out here means the chat
+ * tables stay untouched and a scene is additive — delete every row and the chat
+ * engine still works.
+ *
+ * The key is (houseId, day, phase, placeKind, placeId). Walking out of a room
+ * and back in during the same phase resolves to the same conversation; the next
+ * phase is a new scene, so history stays browsable by day.
+ */
+export const scenes = sqliteTable('scenes', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	houseId: integer('house_id')
+		.notNull()
+		.references(() => houses.id, { onDelete: 'cascade' }),
+	conversationId: integer('conversation_id')
+		.notNull()
+		.references(() => conversations.id, { onDelete: 'cascade' }),
+	day: integer('day').notNull(),
+	phase: integer('phase').notNull(),
+	placeKind: text('place_kind').notNull(), // 'bedroom' | 'shared' | 'interview'
+	bedroomId: integer('bedroom_id').references(() => bedrooms.id, { onDelete: 'cascade' }),
+	sharedSpaceId: integer('shared_space_id').references(() => sharedSpaces.id, {
+		onDelete: 'cascade'
+	}),
+	// Interviews are scenes with an applicant rather than a room: you meet
+	// someone at the door before deciding whether to hand them a lease. Set only
+	// when placeKind is 'interview'. Nulled if the applicant row goes away
+	// (accepted or passed) so the transcript survives the decision it informed.
+	applicantId: integer('applicant_id').references(() => applicants.id, { onDelete: 'set null' }),
+	// Written once, when the phase advances and the scene can no longer change.
+	// Null means either "nothing happened here" or "not summarised yet".
+	summary: text('summary'),
+	summarisedAt: integer('summarised_at', { mode: 'timestamp' }),
+	createdAt: integer('created_at', { mode: 'timestamp' })
+		.notNull()
+		.$defaultFn(() => new Date())
+});
+
+/**
+ * An open thread between the player and a tenant — something asked for,
+ * promised, or left hanging in a scene.
+ *
+ * These are not authored: the scene summariser already writes "her request was
+ * left unresolved" in prose, so the same pass emits them as rows instead of
+ * letting them evaporate into a paragraph. Later summaries in the same house
+ * can close one, which is how the game learns you actually followed through.
+ *
+ * `kind` distinguishes who owes what: a `request` is the tenant wanting
+ * something from the player; a `promise` is the player having committed to
+ * something. Both matter, but only the second is the player's fault when it
+ * lapses.
+ */
+export const threads = sqliteTable('threads', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	houseId: integer('house_id')
+		.notNull()
+		.references(() => houses.id, { onDelete: 'cascade' }),
+	characterId: integer('character_id')
+		.notNull()
+		.references(() => characters.id, { onDelete: 'cascade' }),
+	// The scene that raised it, for provenance.
+	sceneId: integer('scene_id').references(() => scenes.id, { onDelete: 'set null' }),
+	kind: text('kind').notNull(), // 'request' | 'promise'
+	summary: text('summary').notNull(), // "fix the dishwasher"
+	openedDay: integer('opened_day').notNull(),
+	// Set when the player committed to a day ("Thursday"), so a missed deadline
+	// is detectable rather than merely felt.
+	dueDay: integer('due_day'),
+	status: text('status').notNull().default('open'), // 'open' | 'resolved' | 'dropped'
+	resolvedDay: integer('resolved_day'),
+	// Set when a missed deadline has already cost satisfaction, so the penalty
+	// is charged once rather than every day it stays overdue.
+	penaltyChargedDay: integer('penalty_charged_day'),
+	// How it ended, in the resolving scene's words.
+	resolution: text('resolution'),
+	createdAt: integer('created_at', { mode: 'timestamp' })
+		.notNull()
+		.$defaultFn(() => new Date())
+});
+
 export type House = typeof houses.$inferSelect;
 export type NewHouse = typeof houses.$inferInsert;
+export type Scene = typeof scenes.$inferSelect;
+export type NewScene = typeof scenes.$inferInsert;
+export type Thread = typeof threads.$inferSelect;
+export type NewThread = typeof threads.$inferInsert;
+export type Occupancy = typeof occupancy.$inferSelect;
+export type NewOccupancy = typeof occupancy.$inferInsert;
 export type Bedroom = typeof bedrooms.$inferSelect;
 export type NewBedroom = typeof bedrooms.$inferInsert;
 export type SharedSpace = typeof sharedSpaces.$inferSelect;

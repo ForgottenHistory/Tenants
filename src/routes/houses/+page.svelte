@@ -2,7 +2,7 @@
 	import type { PageData } from './$types';
 	import { invalidateAll, goto } from '$app/navigation';
 	import MainLayout from '$lib/components/MainLayout.svelte';
-	import { phaseLabel } from '$lib/house/phases';
+	import { phaseLabel, weekdayLabel } from '$lib/house/phases';
 
 	let { data }: { data: PageData } = $props();
 
@@ -21,6 +21,7 @@
 				error = result.error ?? 'Failed to switch house';
 				return;
 			}
+			window.dispatchEvent(new CustomEvent('houseUpdated'));
 			await invalidateAll();
 			await goto('/');
 		} catch {
@@ -92,8 +93,8 @@
 										{/if}
 									</div>
 									<p class="text-sm text-[var(--text-muted)] mt-1">
-										{#if house.address}{house.address} &middot; {/if}Day {house.day},
-										{phaseLabel(house.phase)} &middot; ${house.balance.toLocaleString()}
+										{#if house.address}{house.address} &middot; {/if}{weekdayLabel(house.day)}, Day
+										{house.day} &middot; {phaseLabel(house.phase)} &middot; ${house.balance.toLocaleString()}
 									</p>
 								</div>
 
