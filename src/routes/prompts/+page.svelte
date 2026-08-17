@@ -38,27 +38,98 @@
 			system: {
 				title: 'System Prompt',
 				description: 'The main prompt sent to the LLM for character responses',
-				default: `You are {{char}}.
+				default: `{{writing_style}}
+
+You are {{char}}.
 
 {{description}}
 
 Personality: {{personality}}
 
+{{example_dialogue}}
+
+{{#if user_description}}You are talking to {{user}}.
+
+{{user_description}}
+{{/if}}
+
 Scenario: {{scenario}}
 
-Write your next reply as {{char}} in this roleplay chat with {{user}}.`
+CONVERSATION SO FAR:
+{{history}}
+
+Write {{char}}'s next reply in this roleplay chat with {{user}}.
+
+Keep it to one beat — a couple of short paragraphs at most — and leave {{user}}
+room to answer.`
 			},
 			impersonate: {
 				title: 'Impersonate Prompt',
 				description: 'Default prompt for generating a message as the user',
 				default: `Write the next message as {{user}} in this roleplay chat with {{char}}.
 
-Stay in character as {{user}}. Write a natural response that fits the conversation flow.`
+{{#if user_description}}WHO YOU ARE WRITING AS:
+{{user_description}}
+
+{{/if}}SITUATION:
+{{scenario}}
+
+CONVERSATION SO FAR:
+{{history}}
+
+Stay in character as {{user}}. Write a natural response that fits the
+conversation flow and the situation above — {{user}} knows where they are, what
+time it is, and what has already been said.
+
+Write ONLY {{user}}'s message, nothing else. No name prefix, no commentary.`
 			},
 			writing_style: {
 				title: 'Writing Style',
 				description: 'Global writing style guide applied to all prompts via {{writing_style}}',
 				default: `# Writing Style
+
+## Formatting
+
+Everything is either speech or narration, and each has its own marker:
+
+- **"Double quotes" for spoken words.** Only what is actually said aloud.
+- **\\*Asterisks\\* for everything else** — actions, description, narration,
+  thoughts. Wrap the whole passage, not individual words.
+
+Never leave narration bare. A sentence outside both quotes and asterisks is
+wrong, even if it is a whole paragraph of description.
+
+Correct:
+
+*She lowers the can with a gasp, wipes her mouth with the back of her hand, and
+flashes a wide grin at the doorway.* "Heyyyy, landlord! Perfect timing — I was
+*just* about to come find you."
+
+Wrong (narration left bare):
+
+She lowers the can with a gasp and grins at the doorway. "Heyyyy, landlord!"
+
+Asterisks inside a quote mark emphasis on a word or two, as in *just* above.
+That is the only time asterisks appear within speech.
+
+## Length
+
+**One reply is one beat.** Say a thing, do a thing, stop. Two or three short
+paragraphs at most — often one is right.
+
+- Stop as soon as the point lands. A reply that ends on a question or a gesture
+  is better than one that keeps going.
+- Do NOT stack action-speech-action-speech into a monologue. If you have written
+  three separate spoken lines, you have written too much.
+- Do NOT move the character all over the room in one turn — cross the room,
+  lean on something, pace, then flop on the bed. Pick one position and stay in
+  it unless there is a reason to move.
+- Leave the other person room to respond. You are having a conversation, not
+  performing a scene alone.
+- Never resolve the exchange yourself: don't ask a question and then answer it,
+  and never narrate the other person's reaction or decide what they do next.
+
+## Voice
 
 Write naturally and casually, like real people actually talk. Avoid purple prose and overly dramatic descriptions.
 
@@ -81,7 +152,13 @@ Write the next message as {{user}} in this roleplay chat with {{char}}.
 
 {{description}}
 
-{{world}}
+{{#if user_description}}You are writing as {{user}}:
+{{user_description}}
+
+{{/if}}{{world}}
+
+Situation:
+{{scenario}}
 
 Conversation so far:
 {{history}}
@@ -101,7 +178,13 @@ Write the next message as {{user}} in this roleplay chat with {{char}}.
 
 {{description}}
 
-{{world}}
+{{#if user_description}}You are writing as {{user}}:
+{{user_description}}
+
+{{/if}}{{world}}
+
+Situation:
+{{scenario}}
 
 Conversation so far:
 {{history}}
@@ -121,7 +204,13 @@ Write the next message as {{user}} in this roleplay chat with {{char}}.
 
 {{description}}
 
-{{world}}
+{{#if user_description}}You are writing as {{user}}:
+{{user_description}}
+
+{{/if}}{{world}}
+
+Situation:
+{{scenario}}
 
 Conversation so far:
 {{history}}
@@ -137,7 +226,9 @@ Write 2-6 sentences. Stay in character as {{user}}.
 			scene_intro: {
 				title: 'Scene Introduction',
 				description: 'Sets the stage when a new scene/conversation starts',
-				default: `You are a narrator setting the stage for a roleplay scene.
+				default: `{{writing_style}}
+
+You are a narrator opening a roleplay scene.
 
 Scenario: {{scenario}}
 
@@ -147,7 +238,23 @@ Characters:
 Player: {{user}}
 {{user_description}}
 
-Describe the scene opening based on the scenario above in 2-3 sentences. Set the atmosphere and describe the setting as specified in the scenario.`
+Someone has just arrived, and that arrival is the moment. Unless the scenario
+says otherwise, {{user}} has walked in on the people described above. Describe it
+in 2-3 sentences: what {{user}} finds, and how the others react to being walked
+in on.
+
+Rules:
+- {{user}} is IN the scene, not observing it from outside. The moment starts
+  because someone came through the door.
+- Show what the others were doing when interrupted, and their immediate reaction
+  to {{user}} — noticing, ignoring, startling, greeting, pretending not to.
+- If someone is asleep or absorbed in something, they may not react at all. Say
+  so; do not invent a reaction that isn't there.
+- Set the atmosphere and the setting as specified in the scenario, but keep it
+  to the room as {{user}} finds it right now.
+- Do not speak for {{user}} or decide what they say, think, or intend. Describe
+  only what they walk into.
+- End on the moment, leaving room for {{user}} to act. Do not resolve anything.`
 			},
 			enter_scene: {
 				title: 'Character Enters',
@@ -290,36 +397,51 @@ Recent conversation:
 Output format:
 {{char}}:
 mood: [1-3 words]
-thinking: [inner monologue, can be expressive]
-position: [location, posture]
+thinking: [one or two sentences, first person]
+position: [posture and placement in the room]
 clothes:
   [item]: [color/style keywords]
 body:
   [feature]: [brief description]
 
-Example output:
+Example output — note this is early morning and she has just woken, so she is in
+sleepwear rather than the outfit her description would list:
 Sakura:
-mood: cheerful, nervous
-thinking: I wonder if he noticed my new dress... I spent so long picking it out
-position: bedroom, sitting on bed edge
+mood: groggy, embarrassed
+thinking: I did not expect anyone to knock this early. Please let my hair not be doing the thing.
+position: sat up against the headboard, duvet pulled to her chest
 clothes:
-  dress: pink floral sundress, white trim
-  sandals: white strappy wedges
-  earrings: cherry blossom studs
+  shirt: oversized grey sleep tee
+  shorts: soft cotton, navy
 body:
-  hair: pink, long, loosely tied
-  expression: smiling, slight blush
-  skin: flushed cheeks
+  hair: pink, long, sleep-tangled
+  expression: half-awake, faint blush
+  skin: pillow crease on one cheek
 
-Guidelines:
-- Keep values SHORT - use keywords, not sentences (except thinking)
-- Mood: 1-3 emotion words (cheerful, anxious, relaxed)
-- Thinking: Character's inner voice, can be expressive/conversational
-- Position: Location + posture, comma-separated
-- Clothes: 3-5 items, color/style keywords only
-- Body: 2-4 features, descriptive keywords
-- NO prose for objective fields (mood, position, clothes, body)
-- Base state on conversation context
+Rules:
+- Output EVERY field listed above, in that order. Never skip one.
+- mood: 1-3 emotion words. No sentences.
+- thinking: their inner voice, first person, MAXIMUM two sentences. This is a
+  passing thought, not a monologue — do not explain their whole situation or
+  argue with themselves at length.
+- position: how they are holding themselves and where they are in the room —
+  "leaning against the counter", "sat sideways on the sofa, one leg up". The
+  room itself is already known, so do NOT answer with just a room name.
+- clothes: 3-5 items, keywords only, no sentences. **What they are wearing right
+  now**, which is often NOT the outfit in their description — that is their
+  typical look, not a uniform they never take off. Dress them for the hour and
+  the situation:
+    - asleep, just woken, or in bed → sleepwear, or a shirt they slept in.
+      Nobody sleeps in heels, a leotard, armour or a formal dress.
+    - just showered or bathing → a towel or a robe.
+    - swimming, exercising, working → what that actually calls for.
+    - at home in the evening → something comfortable.
+  Only put them in their signature outfit when they are dressed for the day and
+  the scene gives no reason otherwise. If the conversation says what they are
+  wearing, that always wins.
+- body: 2-4 features, keywords only, no sentences.
+- Base everything on the conversation and scenario above — especially the time
+  of day and what they are doing in it.
 `
 			}
 		},
@@ -349,13 +471,32 @@ reason: brief explanation`
 			description: {
 				title: 'Description Rewriter',
 				description: 'Cleans up character descriptions from imported cards',
-				default: `Rewrite the following character description to be clean, well-formatted, and suitable for roleplay.
+				default: `Convert this character description into clean, readable plaintext.
 
-Guidelines:
-- Remove any meta-instructions, placeholders, or formatting artifacts
-- Keep the core character traits, appearance, and background
-- Write in third person
-- Use clear, concise prose
+IMPORTANT RULES:
+- Remove any markdown, special formatting, asterisks, brackets, or role-play notation
+- Remove ANY references to romantic relationships with {{user}}, {{char}}, or similar placeholders (e.g., "your girlfriend", "your lover", "in love with you")
+- Remove hints at existing romantic connections or pre-established relationships with the reader
+- Friendships and platonic relationships are fine to keep
+- Keep it natural and descriptive. Write in a more objective way
+- Remove excessive LORE details. Stories about groups, worlds, functionality, scenarios, should be omitted as much as possible.
+
+OUTPUT FORMAT - 3 SECTIONS, 2 PARAGRAPHS EACH (6 PARAGRAPHS TOTAL):
+Each section MUST have exactly 2 large paragraphs. Each paragraph should be 8-12 sentences. Use the section headers exactly as shown.
+
+BACKGROUND:
+[Paragraph 1: Who they are - name, age, species, occupation, living situation, origin story]
+[Paragraph 2: Their life circumstances - daily life, relationships, social status, goals, challenges]
+
+BODY:
+[Paragraph 1: Face and upper body - hair, eyes, face shape, skin, height, build, arms]
+[Paragraph 2: Lower body and details - stature, posture, any distinctive features, how they dress]
+
+PERSONALITY:
+[Paragraph 1: Core traits - temperament, how they interact with others, communication style, strengths]
+[Paragraph 2: Deeper traits - hobbies, interests, quirks, fears, dreams, flaws, what makes them unique]
+
+Output the 3 sections with their headers, 2 paragraphs each. Nothing else.
 
 Original description:
 {{input}}
@@ -455,7 +596,34 @@ Scenario: `
 			character: {
 				title: 'Character Tags Prompt',
 				description: 'Instructions for generating tags describing the character (expression, pose, clothing, actions)',
-				default: `Generate Danbooru tags for the CHARACTER in this scene.
+				default: `Generate Danbooru tags for {{char}} as they are RIGHT NOW in the scene below.
+
+CHARACTER: {{char}}
+{{description}}
+
+SITUATION:
+{{scenario}}
+
+CURRENT STATE:
+{{world}}
+
+WHAT {{char}} IS WEARING:
+{{char_clothes}}
+
+CONVERSATION SO FAR:
+{{history}}
+
+PREFERRED TAGS (use where they fit):
+{{contextual_tags}}
+
+VALID TAGS — use tags from this list wherever one fits. It is the vocabulary the
+image model actually understands, so a tag from here is worth more than a more
+precise phrase that is not:
+{{tag_library}}
+
+Describe only {{char}} — their expression, pose and clothing at this exact
+moment, as the conversation and current state describe them. Not their usual
+look, not what they wore earlier.
 
 Focus on:
 - Expression (smiling, blushing, angry, crying, etc.)
@@ -464,26 +632,59 @@ Focus on:
 - Clothing details with COLOR + TYPE (white shirt, black jacket, blue dress)
 - Accessories (glasses, jewelry, hat, etc.)
 
+Do NOT include tags for the setting, the background, or anyone else.
+
 Output ONLY comma-separated tags for the character, no explanations.`
 			},
 			user: {
 				title: 'User Tags Prompt',
 				description: 'Instructions for generating tags related to user presence/POV in the scene',
-				default: `Generate Danbooru tags for the USER's perspective/presence in this scene.
+				default: `Generate Danbooru tags for {{user}}'s presence in the scene below.
+
+SITUATION:
+{{scenario}}
+
+WHAT {{user}} IS WEARING:
+{{user_clothes}}
+
+CONVERSATION SO FAR:
+{{history}}
+
+VALID TAGS — use tags from this list wherever one fits. It is the vocabulary the
+image model actually understands, so a tag from here is worth more than a more
+precise phrase that is not:
+{{tag_library}}
 
 Focus on:
 - POV tags if applicable (pov, pov hands, first-person view)
-- User's actions toward the character (holding hands, hugging, etc.)
+- {{user}}'s actions toward {{char}} (holding hands, hugging, etc.)
 - User presence indicators (1boy, 1other, etc. if visible)
 
-If the user is not visible or relevant to the image, output: none
+If {{user}} is not visible in the shot or not relevant to the image, output: none
 
 Output ONLY comma-separated tags, no explanations.`
 			},
 			scene: {
 				title: 'Scene Tags Prompt',
 				description: 'Instructions for generating tags for composition, environment, and atmosphere',
-				default: `Generate Danbooru tags for the SCENE/ENVIRONMENT.
+				default: `Generate Danbooru tags for the SCENE/ENVIRONMENT below.
+
+SITUATION:
+{{scenario}}
+
+CURRENT STATE:
+{{world}}
+
+CONVERSATION SO FAR:
+{{history}}
+
+VALID TAGS — use tags from this list wherever one fits. It is the vocabulary the
+image model actually understands, so a tag from here is worth more than a more
+precise phrase that is not:
+{{tag_library}}
+
+Tag the place and the moment described above — the actual room, hour and
+lighting, not a generic setting.
 
 Focus on:
 - Composition/framing (close-up, upper body, cowboy shot, full body, portrait)
@@ -494,6 +695,8 @@ Focus on:
 - Background elements (window, bed, table, trees, etc.)
 
 **ALWAYS include a composition tag** (close-up, upper body, cowboy shot, full body, portrait)
+
+Do NOT include tags describing any person's appearance or clothing.
 
 Output ONLY comma-separated tags, no explanations.`
 			}
