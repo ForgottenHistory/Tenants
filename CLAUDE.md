@@ -1,20 +1,19 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 ## Project Overview
 
-**Rental House** — a visual-novel-flavored management sim. You own a house, tenants
+**Tenants** — a visual-novel-flavored management sim. You own a house, tenants
 arrive and leave on leases, and the experience is built around living alongside a
 rotating cast of characters.
 
-Built on the DynamicTavern codebase: the chat engine, character cards, world state,
-and LLM plumbing are retained; the sandbox exploration layer has been removed and is
-being replaced by a purpose-built house/day-cycle game layer.
-
-See `PLAN.md` for design pillars, architecture, and build order.
+Built on the DynamicTavern codebase: the chat engine, character cards, world
+state, and LLM plumbing are retained; the sandbox exploration layer was removed
+and replaced by a purpose-built house/day-cycle game layer.
 
 ## Rules
+
 - Don't git commit without permission
 - Don't add features that were not part of original request
 - Don't hardcode in arbitrary limits
@@ -37,341 +36,234 @@ See `PLAN.md` for design pillars, architecture, and build order.
 ```bash
 npm run dev           # Start dev server
 npm run build         # Production build
-npm run preview       # Preview production build
 npm run check         # Type check with svelte-check
 npm run lint          # Run ESLint
 npm run db:push       # Push schema changes to SQLite
-npm run db:studio     # Open Drizzle Studio (visual DB editor)
+npm run db:studio     # Open Drizzle Studio
 ```
 
-## Architecture
-
-### Key Directories
+## Key Directories
 
 - `src/lib/server/` - Server-side code (auth, LLM, database, services)
 - `src/lib/components/` - Reusable Svelte components
 - `src/lib/stores/` - Client-side state (characters cache, socket client)
+- `src/lib/house/` - Shared house constants (client + server both import these)
 - `src/routes/api/` - REST API endpoints
-- `data/prompts/` - File-based system prompts (system.txt, impersonate.txt)
+- `data/prompts/` - File-based system prompts
 
-### Database Schema (`src/lib/server/db/schema.ts`)
+## Database
 
-Tables: users, llmSettings, gameMasterSettings, contentLlmSettings, imageLlmSettings, llmPresets, characters, tagLibrary, conversations, messages, sceneParticipants, houses, bedrooms, sharedSpaces, tenants, applicants, occupancy, scenes, threads, relations, houseEvents
-
-**Foreign keys:** `db/index.ts` sets `PRAGMA foreign_keys = ON`. SQLite disables
-enforcement per-connection by default — without it, every `onDelete: 'cascade'`
-in the schema is silently ignored and deleting a parent leaves orphan rows.
-Don't remove it.
+Tables: users, llmSettings, gameMasterSettings, contentLlmSettings,
+imageLlmSettings, llmPresets, characters, tagLibrary, conversations, messages,
+sceneParticipants, houses, bedrooms, sharedSpaces, tenants, applicants,
+occupancy, scenes, threads, relations, houseEvents
 
 - Characters store card data as JSON, images as Base64
 - Messages support "swipes" (alternative responses) as JSON array
 
-### House Layer
+**Foreign keys:** `db/index.ts` sets `PRAGMA foreign_keys = ON`. SQLite disables
+enforcement per-connection by default — without it every `onDelete: 'cascade'` is
+silently ignored and deleting a parent leaves orphan rows. Don't remove it.
 
-The game layer. See `PLAN.md` for full design.
+**SQLite cannot add a foreign key to an existing table**, so drizzle-kit `push`
+creates such columns without their constraint. Anything relying on
+`on delete set null` must do it explicitly in the service.
 
-**Tables:** `houses`, `bedrooms`, `shared_spaces`, `tenants`, `applicants`,
-`relations`, `house_events`
+### Migrations
 
-**Casting model — the whole character library is the pool.** There is no
-per-house roster or eligibility filter: importing a character card is all it
-takes to make someone able to apply. `generateApplicants()` draws at random from
-every character the user owns, excluding only those holding an active tenancy in
-that house. Asking rent is anchored to the vacant rooms' average base rent
-(±15%, rounded to $10).
+`drizzle-kit push` may warn about data loss for NOT NULL columns. Add them
+directly instead, which applies the default to existing rows:
+
+```bash
+sqlite3 local.db "ALTER TABLE users ADD COLUMN event_recall_days INTEGER NOT NULL DEFAULT 3;"
+```
+
+Then `push` sees the column as already existing.
+
+## House Layer
+
+### Structure
+
+**Bedrooms and shared spaces are separate tables**, not one table with a `kind`
+flag. A bedroom is a lease slot (one tenant, generates rent, private); a shared
+space is a stage (zero-to-many people, owned by the house, costs money, and is
+where most of the game happens). One table would mean null-heavy columns and
+branching on `kind` in nearly every query.
+
+**One active house at a time** — `houses.isActive`. `createHouse()` and
+`setActiveHouse()` both deactivate any other active house in the same
+transaction.
+
+Shared constants live in `src/lib/house/` because client and server both need
+them:
+
+| File | Holds |
+|---|---|
+| `phases.ts` | Day cycle (4 phases), `PHASE_PLACEMENT_WEIGHTS`, the week |
+| `spacePresets.ts` | Setup-form presets, bedroom-count bounds |
+| `tenancy.ts` | Lease length, applicant count, satisfaction bands |
+| `activities.ts` | Flavor lines for placed tenants, generic fallback pools |
+| `relations.ts` | Event chance/cap, relation bands, `RELATION_EVENTS` |
+
+**Weekdays are derived from `houses.day`, not stored.** Day 1 is a Monday, so
+`weekday(day)`, `weekNumber(day)` and `isWeekend(day)` fall out of the counter
+with no column and no way for the two to drift. The day number shows alongside
+the weekday everywhere ("Day 5 / Friday") since leases are counted in days.
+Weekends render in `--accent-secondary`.
+
+### Casting
+
+**The whole character library is the pool.** No per-house roster or eligibility
+filter — importing a character card is all it takes to make someone able to
+apply. Asking rent is anchored to the vacant rooms' average base rent (±15%,
+rounded to $10).
 
 Pipeline: **Library → applicants (per-room shortlist) → tenants (leased into
-bedrooms)**. Moving a tenant out returns them to the pool and preserves history
+bedrooms)**. Moving out returns them to the pool and preserves history
 (`status: 'moved_out'`, `moveOutDay` set) rather than deleting the row.
 
-**Applicants apply for a specific room, not the house.** `applicants.bedroomId`
-scopes each shortlist, so filling a vacancy is a choice between named people for
-*that* room rather than a lucky dip from a global pool. Three per room
-(`APPLICANTS_PER_VACANCY`), or fewer when the library can't fill it — a short
-list is valid, not an error.
+**Applicants apply for a specific room**, scoped by `applicants.bedroomId`, so
+filling a vacancy is a choice between named people for *that* room. Three per
+room (`APPLICANTS_PER_VACANCY`), or fewer when the library can't fill it — a
+short list is valid, not an error.
 
 **Shortlists refresh daily.** `ensureApplicantsFor()` returns today's list and
-redraws when `generatedOnDay` is stale, so the same room shows different faces
-tomorrow with newly rolled asking rents. `generateApplicantsForRoom()` forces a
-redraw regardless.
+redraws when `generatedOnDay` is stale; `generateApplicantsForRoom()` forces a
+redraw. It also prunes on read, since a candidate can take another room or move
+out after the list was drawn.
 
 Three exclusions keep the draw sane:
 - anyone holding an active tenancy here
-- anyone who **moved out today** (`moveOutDay >= house.day`) — somebody who just
-  walked out doesn't reappear at the door an hour later; they're eligible again
+- anyone who **moved out today** (`moveOutDay >= house.day`) — eligible again
   from the next day
-- anyone already shortlisted for **another room today**, so one character is
-  never offered two rooms at once
+- anyone already shortlisted for **another room today**, so nobody is offered two
+  rooms at once
 
-Accepting a candidate clears that room's entire shortlist (the others were turned
-away) but leaves other rooms' lists intact. `ensureApplicantsFor()` also prunes
-today's list on read: a candidate can take another room or move out *after* the
-list was drawn, and a stale entry would offer someone unavailable.
+Accepting clears that room's shortlist but leaves other rooms' lists intact.
 
-Two invariants are enforced in `tenantService`, not the schema (SQLite partial
-unique indexes are awkward through drizzle-kit push) — both return **409**:
+Two invariants live in `tenantService`, not the schema (SQLite partial unique
+indexes are awkward through drizzle-kit push) — both return **409**:
 - one active tenant per bedroom
 - one active tenancy per character per house
-
-**Bedrooms and shared spaces are deliberately separate tables**, not one table
-with a `kind` flag. A bedroom is a lease slot (one tenant, generates rent,
-private); a shared space is a stage (zero-to-many people, owned by the house,
-costs money, and is where most of the game happens). They differ in occupancy,
-ownership, economy, and role, so a single table would mean null-heavy columns
-and branching on `kind` in nearly every query.
-
-**One active house at a time** — `houses.isActive`. `houseService.createHouse()`
-and `setActiveHouse()` both deactivate any other active house in the same
-transaction, so the invariant holds without a separate write path.
-
-**Two difficulty dials are player-facing** (General Settings → House
-Simulation), since how busy the house feels is taste rather than balance:
-- `users.houseDriftPercent` (default 25) — chance per tenant per day that
-  something goes wrong and they raise a gripe.
-- `users.houseEventPercent` (default 28) — chance per pair per phase of an
-  off-screen moment between housemates.
-
-Both are **percent integers, 0-100**, and **0 disables that system entirely** —
-the services return early rather than rolling. The constants in
-`$lib/house/` remain the fallback for any caller that doesn't pass a `userId`,
-so behaviour is unchanged when the setting isn't reachable. Everything else in
-`SATISFACTION` and `RELATION` stays a tuned constant; exposing all nine numbers
-would be a dense panel for very little gain.
-
-Note `MAX_EVENTS_PER_PHASE` still caps the draw, so 100% means "every pair rolls"
-rather than "unlimited events".
-
-**Shared constants** live in `src/lib/house/` because both client and server
-need them:
-- `phases.ts` — the day cycle (4 phases), `PHASE_PLACEMENT_WEIGHTS`, and the
-  week. `houses.phase` is an index into `HOUSE_PHASES`.
-
-  **Weekdays are derived from `houses.day`, not stored.** Day 1 is a Monday, so
-  `weekday(day)`, `weekNumber(day)` and `isWeekend(day)` fall out of the counter
-  with no column and no way for the two to drift. Existing houses gained weekdays
-  for free. The day number is kept alongside the weekday everywhere it shows —
-  "Day 5 / Friday" — since leases and history are counted in days. Weekends
-  render in `--accent-secondary` so they read differently at a glance.
-- `spacePresets.ts` — setup-form presets and bedroom-count bounds.
-- `tenancy.ts` — lease length, applicant count, satisfaction bands.
-- `activities.ts` — flavor lines for what a placed tenant is doing, plus the
-  generic fallback pools.
-- `relations.ts` — how housemates feel about each other: event chance and cap,
-  relation bands, and `RELATION_EVENTS` (the off-screen event pools, keyed by
-  phase).
-
-**Activity pools split by what owns them.**
-
-- **Bedroom and away → the character** (`characters.activityPools`, JSON keyed by
-  phase). Every character has a room and can leave, in any house, and the four
-  phases are the same everywhere, so these travel with them. Edited in the
-  character profile's **Activities** tab.
-- **Shared spaces → the space** (`sharedSpaces.activityPool`, a flat JSON
-  `string[]`). The room belongs to the house, so a character can't carry lines
-  for it. Not phase-keyed: what you do in a kitchen barely changes with the hour.
-  Edited from the **Shared Spaces** row on `/house`.
-
-Both fall back to the generic lists in `activities.ts` when unset — per phase for
-characters, per space *kind* for rooms — so an imported card and a fresh house
-both work immediately.
-
-**Write with AI** exists for both: `content_activity_pools.txt` writes a
-character's 24 lines from their card, `content_space_activities.txt` writes a
-room's 6-10 from its name, kind and description. Both write into the textareas
-rather than the database, so the result is reviewed and edited before saving.
-
-The prompt asks for **YAML**, not JSON: the shape is a fixed two-level nest of
-string lists, which YAML expresses without quoting or brace-matching, so models
-produce it more reliably and one malformed line costs a single entry rather than
-the whole document. `parseActivityYaml()` is hand-rolled and forgiving — it
-tolerates code fences, quoted values, inline `[a, b]` lists, and trailing
-commentary. The endpoint then discards any key that isn't a real phase, so a
-hallucinated `dawn:` can never reach stored data.
 
 ### Day Cycle
 
 `houseService.advancePhase()` moves the clock one phase, rolling into the next
-day after Night. **Leases are settled on day rollover only**, not per phase, so a
-lease ends on a day rather than at an arbitrary hour; expiring tenants are moved
-out and the call returns `movedOut` so the UI can report it instead of silently
-changing the roster.
-
-What is **per phase** versus **per day**:
+day after Night.
 
 | Per phase advance | Per day rollover |
 |---|---|
 | Occupancy placement | Lease expiry |
-| Relation events (`relationService`) | Satisfaction drift |
+| Relation events | Satisfaction drift |
 | Scene summarisation | Broken-promise penalties |
 
-Relation events are rolled **after** placement, so they belong to the phase being
-entered rather than the one just left, and `advancePhase` returns them as
-`relationEvents` for the advance notice.
+**Leases settle on day rollover only**, so a lease ends on a day rather than at
+an arbitrary hour. `advancePhase` returns `movedOut` so the UI can report it
+instead of silently changing the roster. Relation events are rolled **after**
+placement, so they belong to the phase being entered, and come back as
+`relationEvents`.
 
-**`occupancy` is the spine.** One row per tenant per phase recording
-`placeKind` (`'bedroom' | 'shared' | 'away'`), the place, and an activity string.
-It is an append-only log, so house history is free — "who was in the kitchen on
-day 12" is just a query.
+**`occupancy` is the spine.** One row per tenant per phase recording `placeKind`
+(`'bedroom' | 'shared' | 'away'`), the place, and an activity string. Append-only,
+so house history is free.
 
 Because it is a log, **rows outlive the tenancy that created them**. Every read
 must filter on `tenants.status = 'active'` (`getForPhase`, `getPresentIn`) or a
-moved-out tenant keeps showing up in the house. `moveOut()` additionally deletes
-that tenant's rows from the current day forward — history before it stays, since
-them having been in the kitchen on day 3 remains true after they leave.
+moved-out tenant keeps showing up. `moveOut()` additionally deletes that tenant's
+rows from the current day forward; earlier history stays true.
 
-`occupancyService.generateForPhase()` is **idempotent** — it clears and re-rolls
-that day/phase, so advancing twice can't double-book anyone.
-`ensureForPhase()` fills in a phase that was never placed (houses predating the
-day cycle), which is what the house view calls.
+`generateForPhase()` is **idempotent** — it clears and re-rolls that day/phase,
+so advancing twice can't double-book anyone. `ensureForPhase()` fills in a phase
+that was never placed, which is what the house view calls.
 
-Placement is currently a **weighted random draw** by time of day
-(`PHASE_PLACEMENT_WEIGHTS`) — mornings quiet, afternoons empty, evenings social,
-nights everyone home. This is deliberately dumb: no LLM cost, no latency, and it
-makes the loop testable. The House Director replaces this later behind the same
-`occupancy` interface, so nothing downstream needs to change.
+Placement is a **weighted random draw** by time of day
+(`PHASE_PLACEMENT_WEIGHTS`) — deliberately dumb: no LLM cost, no latency, and the
+loop stays testable. The House Director replaces this later behind the same
+`occupancy` interface.
 
-Note the distinction the house view draws: a tenant **holds a bedroom lease**
-(`tenants.bedroomId`) but may not **be there right now** (`occupancy`). Vacant
-rooms and absent tenants look different on purpose.
+A tenant **holds a bedroom lease** (`tenants.bedroomId`) but may not **be there
+right now** (`occupancy`). Vacant rooms and absent tenants look different on
+purpose.
 
 ### Room Scenes
 
 Clicking a room opens a conversation with whoever `occupancy` puts there.
-`houseSceneService.resolveScene()` is keyed on **(houseId, day, phase, placeKind,
-placeId)**: first entry creates the scene, every entry after resumes it, and the
-next phase gets a fresh one. Bedrooms are enterable only when someone is actually
-inside — the leaseholder may be elsewhere.
+`resolveScene()` is keyed on **(houseId, day, phase, placeKind, placeId)**: first
+entry creates the scene, later entries resume it, the next phase gets a fresh
+one. Bedrooms are enterable only when someone is actually inside.
 
 **`scenes` is a join table, not columns on `conversations`.** The chat engine
-predates the house layer and still serves library chats that have no room and no
-clock. Keeping the house keys out means the chat tables stay untouched: delete
-every `scenes` row and the chat engine still works.
+predates the house layer and still serves library chats with no room and no
+clock. Delete every `scenes` row and the chat engine still works.
 
-**Interviews are scenes too.** `placeKind: 'interview'` with `scenes.applicantId`
-set — you meet an applicant at the door before deciding whether to offer the
-lease. Same table, so summarisation and recall work unchanged: a tenant who was
-interviewed remembers that conversation once they move in, because `recallFor()`
-matches on `sceneParticipants`. The prompt context names the room they want and
-the terms they are asking, and states that nothing is settled, so the character
-negotiates rather than narrating themselves into the house.
-
-The transcript outlives the applicant row — accepting or passing nulls
-`applicantId` and keeps the scene, since the conversation is what informed the
-decision. That detach is done **explicitly in the service**, not by the declared
-`on delete set null`: SQLite cannot add a foreign key to an existing table, so
-drizzle-kit's `push` created the column without its constraint.
+**Interviews are scenes too** — `placeKind: 'interview'` with
+`scenes.applicantId`. Summarisation and recall work unchanged, so a tenant
+remembers their interview once they move in. The prompt names the room and terms
+and states nothing is settled, so the character negotiates rather than narrating
+themselves into the house. Accepting or passing nulls `applicantId` and keeps the
+scene (done explicitly in the service — see the SQLite foreign-key note above).
 
 **Scenes are conversation-keyed; library chat is character-keyed.** This is why
 `/scene/[conversationId]` exists rather than reusing `/chat/[id]`, which resolves
 "the active conversation for this character" — an assumption room scenes break,
-since one character can hold several scenes across different days and phases and
-all of them persist. Scene conversations are written with `isActive: false` so
-they never hijack that lookup. Same reason `/api/scenes/[conversationId]/send`
-exists alongside `/api/chat/[characterId]/send`, and the same for
-`/impersonate`. Everything else (`swipe`, `regenerate`, `edit`, `delete`) was
-already conversation-keyed and is reused unchanged, as are all the `chat/`
-components.
-
-**`ChatInput` hides its action row unless handlers are passed** — `showActions`
-is derived from `onSceneAction || onImpersonate || onGenerateImage ||
-onRegenerate`, so a page that only passes `onSend` silently gets a bare textbox.
-Scenes wire impersonate, regenerate and scene actions; image generation is still
-unwired.
-
-**`ChatInput` is a two-layer control, and the layers must lay out identically.**
-A transparent textarea (visible caret, transparent text) sits over
-`.rp-input-highlight`, which re-renders the same string with quotes and
-`*actions*` coloured. The caret is drawn by the textarea, so **any style on the
-highlight spans that changes glyph advance widths puts the caret visibly off the
-character it is actually on** — you click a letter, the caret lands several
-characters earlier, and typing or deleting hits the wrong place.
-
-`.rp-action` was `font-style: italic`, and the system italic face is ~2.6%
-narrower: a long action block pushed everything after it ~29px out of alignment.
-**Colour only in those spans** — never font-style, weight, size, letter-spacing,
-or family. Italic can't be recovered here: `oblique 0deg` keeps the metrics but
-has no slant, and every angled `oblique` selects the same narrower face.
-
-To check alignment, compare where each layer paints the same string offset (a
-plain-text mirror div for the textarea versus a `Range` in the highlight).
-`document.caretPositionFromPoint` is **useless for this** — it queries the
-textarea's own layout and returns the correct offset even when the bug is
-present.
-
-**World panel.** `/api/scenes/[conversationId]/world` (GET reads, POST
-regenerates) drives `ChatWorldPanel` on the right of a scene. It passes **every**
-participant, not just the one answering, since a room can hold several people,
-and feeds `conversation.scenario` in as the scenario so state is grounded in the
-actual room and hour. Gated on the `users.worldSidebarEnabled` setting, which is
-**off by default** — the panel simply won't render until it's turned on.
-
-**Entering a scene regenerates it.** The stored state is shown immediately, then
-refreshed, because the clock has usually moved since you were last in that room —
-a panel describing someone asleep in bed when they're now in the yard is worse
-than no panel. The refresh is chained onto `loadSettings()` since the panel is
-gated on a setting that isn't known at mount.
-
-`/api/scene-action` was already conversation-keyed, so scenes reuse it unchanged.
-It backs both the input's action menu and the panel's per-item eye icons
-(`look_item`), which write a narrator message into the scene.
+since one character holds many scenes across days and phases. Scene conversations
+are written with `isActive: false` so they never hijack that lookup. Same reason
+`/api/scenes/[conversationId]/send` and `/impersonate` exist alongside the
+`chat/` equivalents. Everything else (`swipe`, `regenerate`, `edit`, `delete`,
+`/api/scene-action`) was already conversation-keyed and is reused unchanged, as
+are all the `chat/` components.
 
 **House context rides in `conversations.scenario`.** `generateChatCompletion`
-rebuilds it into `{{scenario}}` on *every* message, so the room, the hour, the
-activity and the lease terms stay in context for the whole scene instead of
-decaying out of the history window after the intro. `generateSceneNarration`
-reads the same column, so the narrator gets it too. It is built from data already
-in `occupancy` and `tenants` — no LLM call, no latency, no cost.
+rebuilds it into `{{scenario}}` on *every* message, so the room, hour, activity
+and lease terms stay in context instead of decaying out of the history window.
+`generateSceneNarration` reads the same column. Built from `occupancy` and
+`tenants` — no LLM call, no latency, no cost.
+
+**World panel.** `/api/scenes/[conversationId]/world` (GET reads, POST
+regenerates) drives `ChatWorldPanel`. It passes **every** participant, since a
+room can hold several people, and feeds `conversation.scenario` in as the
+scenario. Gated on `users.worldSidebarEnabled`, **off by default**. Entering a
+scene shows stored state immediately then regenerates, since the clock has
+usually moved; the refresh is chained onto `loadSettings()` because the gate
+isn't known at mount.
 
 ### Scene Memory
 
 **Scenes are summarised on phase advance, never on exit.** Walking out of a room
-is not an ending — you can walk straight back in and keep talking, so summarising
-on exit would re-summarise the same conversation every time the player crossed
-the doorway. A scene only becomes immutable when the clock moves past its phase,
-which is the one moment a summary is guaranteed correct and needs writing exactly
-once.
+is not an ending — you can walk back in and keep talking. A scene only becomes
+immutable when the clock moves past its phase, which is the one moment a summary
+is guaranteed correct and needs writing exactly once.
 
-`houseSceneService.summariseFinishedScenes()` runs from the advance endpoint and
-is **deliberately not awaited** — the clock must move the instant the player
-clicks, with summaries filling in behind it. A failed or slow summary leaves
-`scenes.summary` null and is retried on the next advance. Scenes with no
-back-and-forth (a narrator intro and nothing else) are skipped, so opening a door
-and leaving costs nothing.
+`summariseFinishedScenes()` runs from the advance endpoint and is **deliberately
+not awaited** — the clock must move the instant the player clicks. A failed or
+slow summary leaves `scenes.summary` null and is retried next advance. Scenes
+with no back-and-forth are skipped.
 
-`recallFor()` feeds prior summaries back into the house context under an
-**"Earlier:"** heading, scoped to the characters actually present — a tenant
-recalls what they took part in, not everything that ever happened in the house. A
-scene never recalls itself. Resuming a scene rebuilds its context too, since
-summaries of earlier scenes may have landed in the background since it was
-created.
+`recallFor()` feeds prior summaries into the house context under **"Earlier:"**,
+scoped to the characters present. A scene never recalls itself. Resuming a scene
+rebuilds its context, since summaries may have landed in the background.
 
-Each line carries **both** the weekday and the day number
-(`Wednesday (day 3), Evening, Kitchen: …`) — the weekday reads naturally, the
-number gives orderable distance so the model can reason about gaps and missed
-deadlines.
+Each line carries **both** weekday and day number (`Wednesday (day 3), Evening,
+Kitchen: …`) — the weekday reads naturally, the number gives orderable distance.
 
 **Recall is budgeted in tokens, not scenes.** `users.sceneRecallPercent` is a
-share of the **chat LLM's `contextWindow`** (default 15%, clamped 0-90), so it
-scales with the model instead of needing a retune whenever you switch. Summaries
-vary from ~80 to ~200 tokens, so "the last N scenes" spent an unpredictable
-amount of context. Scenes are walked newest-first until the budget is spent, so
-the oldest fall off; the most recent is always kept even if it alone exceeds the
-budget. `estimateTokens()` in `$lib/house/tenancy.ts` is a deliberate ~4-chars
-approximation — no tokenizer dependency for something that only decides how much
-history fits. Set in **General Settings → Scene Memory**; 0 disables recall.
+share of the **chat LLM's `contextWindow`** (default 15, clamped 0-90), so it
+scales with the model. Scenes are walked newest-first until the budget is spent;
+the most recent is always kept even if it alone exceeds it. `estimateTokens()`
+(`$lib/house/tenancy.ts`) is a deliberate ~4-chars approximation. 0 disables
+recall.
 
-Summaries use the **Content LLM** (`contentLlmService.summariseScene()`,
-prompt at `data/prompts/content_scene_summary.txt`), not the Chat LLM — this is
-extraction, not performance, and it keeps chat latency and cost untouched.
+Summaries use the **Content LLM** (`summariseScene()`,
+`data/prompts/content_scene_summary.txt`), not the Chat LLM — extraction, not
+performance, and it keeps chat latency untouched.
 
 ### Satisfaction
 
-**How a tenant feels about living here — not about you.** It is housing quality,
-not a relationship meter: nothing in it should read as affection, and being liked
-is not the same as being a good landlord.
+**How a tenant feels about living here — not about you.** Housing quality, not a
+relationship meter: nothing in it should read as affection.
 
-All movement goes through `satisfactionService`, and every number lives in
-`SATISFACTION` (`$lib/house/tenancy.ts`) so difficulty is one file to tune:
+All movement goes through `satisfactionService`; every number lives in
+`SATISFACTION` (`$lib/house/tenancy.ts`).
 
 | Trigger | Effect | When |
 |---|---|---|
@@ -382,192 +274,138 @@ All movement goes through `satisfactionService`, and every number lives in
 | Missed a dated promise | −12, **charged once** (`threads.penaltyChargedDay`) | Day rollover |
 
 Three deliberate choices:
-- **Drift is a chance, not a decay.** A house that degrades on a timer is a
-  treadmill; one where things *sometimes* go wrong reads as upkeep.
-- **The scene gain is once per day**, or phase-spamming the same tenant would be
-  the optimal strategy.
-- **A broken promise is charged once**, on the day it lapses. The sting is
-  missing the deadline, not the ongoing state — charging daily would spiral one
-  forgotten repair into a move-out.
+- **Drift is a chance, not a decay** — a house that degrades on a timer is a
+  treadmill.
+- **The scene gain is once per day**, or phase-spamming one tenant is optimal.
+- **A broken promise is charged once**, on the day it lapses. Charging daily
+  would spiral one forgotten repair into a move-out.
 
-Satisfaction is shown on the house-page portraits (band + colour) and reported in
-the advance notice when it drops, so a change is never a silent number.
+**Drift names an actual gripe and opens a thread for it**, drawn from
+`HOUSE_GRIPES`, so the complaint reaches scene context under "Unresolved:",
+appears in Needs You, and can be resolved for credit. Gripes already open for
+that tenant are excluded. Without a named gripe a tenant loses satisfaction over
+nothing, and mentioning it to them gets a blank look.
 
-**The drift names an actual gripe and opens a thread for it.** It used to record
-the reason as the literal string "something around the house" — so a tenant lost
-satisfaction over nothing nameable, and because the reason never reached the
-prompt, mentioning it to them got a blank look. Now it draws from `HOUSE_GRIPES`
-(a dripping tap, cold shower, flickering light) and inserts a `request` thread,
-which means the complaint reaches the scene context under "Unresolved:", appears
-in the Needs You panel, and can be resolved for the usual credit. Gripes already
-open for that tenant are excluded, so nobody complains about the same tap twice.
-
-**Satisfaction itself reaches the prompt**, via `satisfactionMood()` on each
-person in `Present:` — a sentence rather than the UI's one-word band, phrased as
-how they feel and how they'd behave ("They are restless about the place — willing
-to say so if asked directly"). Without it a character at 30 satisfaction
-cheerfully denies any problem, because nothing in the prompt told them they had
-one. Kept about **living here**, never about the landlord personally, matching
-the rest of the system.
+**Satisfaction reaches the prompt** via `satisfactionMood()` on each person in
+`Present:` — a sentence about how they feel and would behave, not the UI's
+one-word band. Without it a character at 30 satisfaction cheerfully denies any
+problem. Kept about **living here**, never about the landlord personally.
 
 ### Threads
 
-**Unfinished business between the player and a tenant** — `threads`. Not
-authored: the summariser was already writing "her request was left unresolved"
-in prose, so the same pass now emits it as rows. One Content LLM call per scene
-does all three jobs (summary, new threads, closures), so this costs nothing
-extra.
+**Unfinished business between the player and a tenant.** Not authored — the
+summariser emits them as rows. One Content LLM call per scene does all three jobs
+(summary, new threads, closures).
 
-`kind` is `request` (the tenant wants something) or `promise` (the player
-committed to something). `dueDay` is set only when a day was actually named, so a
-missed deadline is detectable rather than merely felt.
+`kind` is `request` (tenant wants something) or `promise` (player committed to
+something). `dueDay` is set only when a day was actually named, so a missed
+deadline is detectable rather than merely felt.
 
-Open threads appear in the scene context under **"Unresolved:"**, scoped to who
-is present, aged in plain language ("Outstanding since yesterday — due Tuesday
-(day 9), now overdue"). That is the nudge: a character has a standing reason to
-raise something the moment you walk in.
+Open threads appear in scene context under **"Unresolved:"**, scoped to who is
+present, aged in plain language ("Outstanding since yesterday — due Tuesday
+(day 9), now overdue").
 
-**The house page shows them in a "Needs You" panel** on the right
-(`HouseAgendaPanel`), alongside leases within `LEASE_WARNING_DAYS` of expiry.
-Sorted overdue-first, then oldest. Clicking a row walks into whichever room that
-character is in; if they're out it says so rather than failing silently, since
-the thread stays open and they'll be back.
+**The house page shows them in "Needs You"** (`HouseAgendaPanel`), alongside
+leases within `LEASE_WARNING_DAYS` of expiry, sorted overdue-first then oldest.
+Clicking a row walks to whichever room that character is in; if they're out it
+says so rather than failing silently.
 
 **Every row has ✓ and ✕ to close it by hand**
-(`POST /api/houses/[houseId]/threads/[threadId]`, `houseSceneService.closeThread`).
-Automatic closure depends on the summariser noticing that a conversation settled
-something — it misses things, and it never sees anything handled off-screen, so
-without a manual close those items sit in the panel forever and an overdue
-promise keeps costing satisfaction.
+(`POST /api/houses/[houseId]/threads/[threadId]`). Automatic closure depends on
+the summariser noticing a conversation settled something — it misses things and
+never sees anything handled off-screen, so without a manual close those items sit
+in the panel forever and an overdue promise keeps costing satisfaction.
 
-- **✓ resolved** credits satisfaction exactly as an LLM-detected closure does
-  (`creditResolvedThread`).
-- **✕ dropped** clears it with no credit — deciding something no longer matters
-  is not the same as doing it.
+- **✓ resolved** credits satisfaction exactly as an LLM-detected closure does.
+- **✕ dropped** clears it with no credit.
 
-The update is guarded on house **and** `status = 'open'`, so a stale click cannot
-reopen or double-credit something already settled; it 409s instead.
+The update is guarded on house **and** `status = 'open'`, so a stale click can't
+reopen or double-credit; it 409s instead.
 
-Note the row is a `div` containing a button rather than one big button, because
-nesting buttons is invalid HTML — the inner button walks to the character, the
-action buttons sit beside it.
+The row is a `div` containing a button, not one big button — nesting buttons is
+invalid HTML.
 
-Two guards, because the model doesn't reliably follow the prompt here:
+Two guards, because the model doesn't reliably follow the prompt:
 - **Closures are matched by id AND house**, so a hallucinated id can't resolve
   another house's thread.
-- **New threads are deduped against open ones** by normalised text. The prompt
-  says not to re-open tracked items; it sometimes does anyway, and a duplicate
-  would nag twice and never fully close.
+- **New threads are deduped against open ones** by normalised text, or a
+  duplicate would nag twice and never fully close.
 
 ### Relations and the House Log
 
-**How tenants feel about each other** — `relations` — as distinct from
-`satisfaction`, which is how they feel about the housing. Housemates get on with
-each other whether or not the player is in the room, so a phase advance rolls a
-few off-screen moments: someone made coffee, someone ate the leftovers.
+**How tenants feel about each other**, as distinct from satisfaction. A phase
+advance rolls a few off-screen moments between housemates. Every number lives in
+`RELATION` (`$lib/house/relations.ts`).
 
-Every number lives in `RELATION` (`$lib/house/relations.ts`), same as
-`SATISFACTION`:
+| Setting | Value |
+|---|---|
+| `EVENT_CHANCE` | 0.28 per pair per advance |
+| `MAX_EVENTS_PER_PHASE` | 3 |
+| Score range | −100..100 (bands derived, never stored) |
+| `EVENT_RECALL_DAYS_DEFAULT` | 3 |
+| `EVENT_HARD_CAP` | 20 |
 
-| Setting | Value | Why |
-|---|---|---|
-| `EVENT_CHANCE` | 0.28 per pair per advance | Alive, not soap-operatic |
-| `MAX_EVENTS_PER_PHASE` | 3 | A wall of notifications reads as noise |
-| Score range | −100..100 | Bands derived, never stored |
-| `EVENT_RECALL_DAYS_DEFAULT` | 3 | Factory value for the user setting |
-| `EVENT_HARD_CAP` | 20 | Ceiling on event lines in one prompt |
+Bands are Hostile / Cool / Neutral / Warm / Close via `relationLabel()`, exactly
+like `satisfactionLabel()`.
 
-Bands are Hostile / Cool / Neutral / Warm / Close, derived by `relationLabel()`
-exactly like `satisfactionLabel()`.
+**`RELATION_EVENTS` is keyed by phase**, so events match the hour. Positive and
+negative sit in one pool per phase and are drawn together, so the odds fall out
+of the mix rather than a second roll.
 
-**`RELATION_EVENTS` is keyed by phase**, so events match the hour: bathroom
-queues and coffee in the morning, errands and borrowed things in the afternoon,
-cooking and leftovers in the evening, noise through the wall at night. Positive
-and negative sit in one pool per phase and are drawn together, so the odds of a
-good or bad day fall out of the mix rather than a second roll.
+Two details that stop the draw reading as mechanical: **candidates are shuffled
+before capping**, and **which of the pair is the actor is a coin flip**.
 
-**Placement is deliberately dumb** — a weighted random draw, no LLM call, no
-latency, no cost. Same reasoning as `occupancyService`: the loop stays testable
-and free, and the House Director can replace the draw later behind the same
-interface.
+**`relations` is stored unordered** — `characterAId` is always the lower id, so a
+pair has exactly one row however it is looked up. Feelings are **mutual**. Keyed
+on **characters, not tenants**, so a relationship survives someone moving out and
+back in.
 
-Two details that stop the draw reading as mechanical:
-- **Candidates are shuffled before capping**, so it isn't always the same pairs
-  that get through in a busy house.
-- **Which of the pair is the actor is a coin flip**, so "{a} ate {b}'s
-  leftovers" doesn't always fall on whoever has the lower character id.
+**`house_events` is append-only** and stores the **rendered text** rather than a
+template plus ids, so a line stays readable after a character is deleted.
 
-**`relations` is stored unordered** — `characterAId` is always the lower id, so
-a pair has exactly one row however it is looked up. Feelings are **mutual**: the
-asymmetric version (A resents B more than B resents A) would double the rows and
-writes for a nuance nothing currently reads. Keyed on **characters, not
-tenants**, so a relationship survives someone moving out and moving back in —
-they remember each other.
-
-**`house_events` is append-only**, like `occupancy`: the log IS the history. It
-stores the **rendered text** rather than a template plus ids, so a line stays
-readable after a character is deleted — a line about someone who no longer lives
-here is still a true thing that happened.
-
-**Moving in and out are events too** (`kind: 'move_in' | 'move_out'`,
-`delta: 0` — arriving isn't good or bad for anyone's relations). Recorded from
-all four paths that change the roster: `acceptApplicant`, `placeCharacter`,
-`moveOut`, and lease expiry inside `advancePhase` (which moves tenants out
-directly rather than through `moveOut`). Two ordering constraints:
+**Moving in and out are events too** (`kind: 'move_in' | 'move_out'`, `delta: 0`),
+recorded from all four paths that change the roster: `acceptApplicant`,
+`placeCharacter`, `moveOut`, and lease expiry inside `advancePhase`. Two ordering
+constraints:
 - `acceptApplicant` logs **after** its transaction commits — an event for a
-  move-in that failed to write would be a lie in the house's history.
-- `moveOut` reads the name and room **before** its update, which nulls
-  `bedroomId` and would otherwise make the room unrecoverable.
+  move-in that failed to write would be a lie.
+- `moveOut` reads name and room **before** its update, which nulls `bedroomId`.
 
-**Relations and events reach the scene context** via `buildLayoutContext`,
-after the housemate roster so the names are introduced before being referenced:
-- **"How they get on:"** — only pairs outside Neutral. A wall of "Neutral" is
-  noise, and the absence of a line already means "no strong feelings".
+Both reach scene context via `buildLayoutContext`, after the housemate roster so
+names are introduced before being referenced:
+- **"How they get on:"** — only pairs outside Neutral; a wall of "Neutral" is
+  noise and its absence already means "no strong feelings".
 - **"Recently in the house:"** — events from the last `users.eventRecallDays`
-  days, oldest-first, each carrying weekday and day number. This is **common
-  knowledge** everyone living there would have, unlike scene recall which is
-  scoped to who took part.
+  days, oldest-first. This is **common knowledge**, unlike scene recall.
 
-**Event recall is measured in days, not a count** (General Settings → Scene
-Memory, default 3, clamped 0-14; 0 disables it). "The last N events" spans an
-hour in a chaotic house and a month in a quiet one, which is the wrong shape for
-"what happened recently" — a day window gives the same sense of recency either
-way. The window is inclusive of today, so 1 day means today only.
-`EVENT_HARD_CAP` still applies on top: a full house can produce a dozen events a
-day, and the day window controls *how far back*, not *how much*.
+**Event recall is measured in days, not a count** (default 3, clamped 0-14, 0
+disables). "The last N events" spans an hour in a chaotic house and a month in a
+quiet one. The window is inclusive of today. `EVENT_HARD_CAP` still applies on
+top — the day window controls *how far back*, not *how much*.
 
-Both are excluded from interviews, for the same reason housemate personalities
-are: an applicant at the door hasn't lived through any of it.
+Both are excluded from interviews: an applicant at the door hasn't lived through
+any of it.
 
-**Three surfaces:** the advance notice ("While you were away"), a `HouseLifePanel`
-under Needs You on `/house`, and `/house/log` — the full history grouped by day
-with a running standings column.
+**Three surfaces:** the advance notice ("While you were away"), `HouseLifePanel`
+on `/house`, and `/house/log` (full history by day with running standings).
 
-**Scene summaries are shown alongside the events.** `getSummarisedScenes()`
-returns condensed scenes with their place and cast; the panel lists them under
-**Remembered** (folded, since they're paragraphs — clicking one opens it), and
-the log interleaves them into each day with an accent dot and a tinted row, so a
-day reads as everything that happened rather than two disconnected lists. Both
-link back to the transcript via `conversationId`.
+**Scene summaries show alongside the events.** `getSummarisedScenes()` returns
+condensed scenes with place and cast; the panel lists them under **Remembered**
+(folded), and the log interleaves them into each day. This is deliberately the
+*same text* fed into `recallFor()` — the player reads exactly what the characters
+remember, which makes a bad summary visible rather than mysterious.
 
-This is deliberately the *same text* fed into `recallFor()` — the player reads
-exactly what the characters remember, which makes a bad summary visible rather
-than mysterious.
+**"Between Them" is sorted alphabetically, not by score** — it is a directory you
+look names up in; score-ordering moves a row every time anything happens.
 
-**"Between Them" is sorted alphabetically, not by score.** It is a directory you
-look names up in; score-ordering moves a pair every time anything happens between
-them, so the row you want is never where you last saw it.
-
-**Clicking a pair opens their history** (`RelationDetailModal`, on both `/house`
-and `/house/log`). `getEventsBetween()` matches the pair in **either order**,
-since `house_events` records whoever acted as A — the same two people appear both
-ways round. The modal shows each event's delta alongside a **running total**, so
-the score is explained rather than asserted: you can see the −6, −12, −17 that
-led to "Cool".
+**Clicking a pair opens their history** (`RelationDetailModal`).
+`getEventsBetween()` matches the pair in **either order**, since `house_events`
+records whoever acted as A. The modal shows each delta alongside a running total,
+so the score is explained rather than asserted.
 
 ### Prompt Context Blocks
 
-`houseSceneService` assembles what a character knows. The blocks, in order:
+`houseSceneService` assembles what a character knows:
 
 | Block | Source | Scope |
 |---|---|---|
@@ -581,87 +419,59 @@ led to "Cool".
 | `Earlier:` | `recallFor` | Scene summaries, scoped to who is present |
 | `Unresolved:` | `openThreadsFor` | Open threads, scoped to who is present |
 
-The distinction that matters: **layout blocks are common knowledge** (anyone
-living here knows the house and the gossip), while **recall, routines and threads
-are scoped to the people actually present** (you remember your own week and what
-you took part in).
+**Layout blocks are common knowledge** (anyone living here knows the house and
+the gossip); **recall, routines and threads are scoped to who is present**.
 
-**`buildRoutines` turns `occupancy` into "what have you been up to?"** The log
-already records where every tenant was in every phase; without feeding it back, a
-character knows what they are doing *right now* and nothing about their own week.
-Three deliberate choices in the rendering:
-- **Grouped by day, not phase** — four lines a day per character would bury the
-  rest of the prompt, and "Tuesday: morning on the stove, afternoon on the couch"
-  is how someone would actually answer.
-- **Consecutive repeats of the same place collapse**, so a quiet day reads as one
-  phrase instead of four identical ones.
-- **Today stops before the current phase**, since `Present:` already states what
-  they are doing this moment.
+`buildLayoutContext(houseId, excludeCharacterIds, { roomsOnly, currentDay, userId })`
+— `excludeCharacterIds` drops people already under `Present:`; `roomsOnly` is
+interview mode. **The events block only renders when `currentDay` is passed**,
+and `userId` is what reads `eventRecallDays`.
 
-Empty history returns an empty array rather than a bare heading — a house on day 1
-has nothing to report.
+Housemates carry their card **`personality`**, not `description` — `description`
+is the whole card and would be thousands of tokens per resident.
 
-`buildLayoutContext(houseId, excludeCharacterIds, { roomsOnly, currentDay, userId })` —
-`excludeCharacterIds` drops people already under `Present:` with richer detail so
-nobody is described twice; `roomsOnly` is the interview mode, giving room names
-without occupants, housemates, relations or events. **The events block only
-renders when `currentDay` is passed** (it needs a day to measure the window back
-from), and `userId` is what reads the player's `eventRecallDays` setting —
-without it the block falls back to the default.
+**`buildRoutines` turns `occupancy` into "what have you been up to?"** Without
+it a character knows what they are doing right now and nothing about their own
+week. Grouped by day, not phase; consecutive repeats of the same place collapse;
+today stops before the current phase since `Present:` already covers it. Empty
+history returns an empty array rather than a bare heading.
 
-Housemates carry their card **`personality`**, not `description` — `personality`
-is the generated profile (appearance + manner, see below), while `description` is
-the whole card and would be thousands of tokens per resident.
-
-**Cost:** the layout block runs roughly 30 tokens plus ~350-450 per absent
-housemate, plus ~20 per event line. A full four-bedroom house at the default
-3-day window adds ~1,200-1,600 tokens per message. This is a deliberate trade —
-characters knowing who they live with is worth more than the context saved. The
-dials, if it ever needs trimming: `users.eventRecallDays` (General Settings),
-`EVENT_HARD_CAP`, and the paragraph budget in
+**Cost:** ~30 tokens plus ~350-450 per absent housemate, plus ~20 per event line.
+A full four-bedroom house at the default 3-day window adds ~1,200-1,600 tokens
+per message — a deliberate trade. The dials if it needs trimming:
+`users.eventRecallDays`, `EVENT_HARD_CAP`, and the paragraph budget in
 `content_personality_generate.txt`.
 
 ### Generating a Personality
 
-Imported cards almost always have an **empty `personality`** — the field exists
-in the v2 spec but most cards leave it blank, putting everything in
-`description`. That matters here because the house layer repeats `personality`
-for every resident in every scene prompt.
+Imported cards almost always have an **empty `personality`** — the v2 field
+exists but most cards put everything in `description`. That matters because the
+house layer repeats `personality` for every resident in every scene prompt.
 
-The **Generate** button on the Personality field (character profile → Overview)
-builds one from the Description: `content_personality_generate.txt` →
-`contentLlmService.generatePersonality()` → `POST /api/characters/[id]/personality`.
-It returns for review rather than saving, so the result lands in edit mode.
+The **Generate** button (character profile → Overview) builds one from the
+Description: `content_personality_generate.txt` → `generatePersonality()` →
+`POST /api/characters/[id]/personality`. It returns for review rather than
+saving.
 
 It **always builds from scratch** and ignores the current value — unlike Rewrite,
-which needs existing text and is therefore useless on the empty field that is the
-common case. Rewrite was removed from Personality for that reason (Description
-keeps it).
+which needs existing text and is useless on the empty field that is the common
+case. Rewrite was removed from Personality for that reason (Description keeps
+it).
 
-The prompt asks for **two paragraphs — appearance, then manner** — because that
-is what a housemate would know about someone they live with. Appearance is not
-optional: without it a character can't reference what anyone else looks like,
-which is conspicuous in a house where people share a kitchen. Roughly 350-450
-tokens per resident; the source description is often ten times that, so this is
-still a summary, just not a one-liner.
+The prompt asks for **two paragraphs — appearance, then manner**. Appearance is
+not optional: without it a character can't reference what anyone else looks like.
+Standing rule: **only what the description supports, invent nothing.**
 
-Standing rule for the prompt: **only what the description supports, invent
-nothing** — if the card says nothing about their eyes, they don't get eyes. No
-backstory, no plot, no named relationships; this is a description of a person,
-not a synopsis of their story.
+### Routes and Navigation
 
-**Key routes:** `/` (start or resume), `/house/new` (setup), `/house` (main
-view), `/house/tenants` (roster + applicant screening), `/house/log` (house
-history + relation standings), `/houses` (switch active house).
+`/` (start or resume), `/house/new` (setup), `/house` (main view),
+`/house/tenants` (roster + screening), `/house/log` (history + standings),
+`/houses` (switch active house).
 
-Home deliberately carries **no** Library or Settings cards — those live in the
-top nav. Home is about the house only.
+Home carries **no** Library or Settings cards — those live in the top nav.
 
-**Home has three states, and an empty house is a gate, not a save.** A house
-with zero active tenants has nothing to do — no scenes, no rent, no reason to
-advance the day — so Home shows "The house is empty" with *Find a Tenant* as the
-primary action and a setup-progress row, rather than a Continue button into a
-dead end:
+**Home has three states, and an empty house is a gate, not a save.** A house with
+zero active tenants has nothing to do:
 
 | State | Primary action |
 |---|---|
@@ -669,81 +479,80 @@ dead end:
 | House, 0 tenants | Find a Tenant (or Import Characters if the library is empty) |
 | House + tenants | Continue |
 
-Supporting this: `/house/new` redirects to `/house/tenants` (not Home) after
-creating, `/house/tenants` **auto-draws a first batch of applicants** when the
-house is empty and none are waiting, and `/house` shows a "Nobody lives here
-yet" banner. A house can fall back into the empty state when leases expire, so
-this is a live check, not just first-run onboarding.
+Supporting this: `/house/new` redirects to `/house/tenants` after creating,
+`/house/tenants` **auto-draws a first batch of applicants** when the house is
+empty and none are waiting, and `/house` shows a "Nobody lives here yet" banner.
+A house can fall back into the empty state when leases expire, so this is a live
+check, not just first-run onboarding.
 
-**Reset to Day 1** sits with the stats row on Home (`houseService.resetHouse()`,
-`POST /api/houses/[houseId]/reset`). It clears threads, scenes, occupancy,
-applicants, tenants, relations and house events, then puts the clock back to day
-1 with `DEFAULT_STARTING_BALANCE`. **The rooms survive** — the property is what
-you built, and rebuilding it to play again would be busywork.
+**Reset to Day 1** (`resetHouse()`, `POST /api/houses/[houseId]/reset`) clears
+threads, scenes, occupancy, applicants, tenants, relations and house events, then
+returns to day 1 with `DEFAULT_STARTING_BALANCE`. **The rooms survive.** Two
+details:
+- **Scene conversations are deleted explicitly** — `scenes` cascades from the
+  house but the `conversations` rows it points at do not, leaving orphaned
+  transcripts otherwise.
+- **Balance resets to the default**, not the house's original starting balance,
+  which isn't stored anywhere. Add a `startingBalance` column if that matters.
 
-Two details:
-- **Scene conversations are deleted explicitly.** `scenes` cascades from the
-  house, but the `conversations` rows it points at do not, so dropping scenes
-  alone would leave orphaned transcripts in chat history with no room and no
-  clock to reach them by.
-- **Balance resets to the default, not the house's original starting balance** —
-  the setup form's choice isn't stored anywhere, so there is nothing to restore
-  it to. Add a `startingBalance` column if that matters.
-
-**House switcher** (`layout/HouseSwitcher.svelte`) sits in the top-right of the
-nav bar, beside logout. It shows the current house with day/phase and drops down
-to house shortcuts, other houses to switch to, and manage/create links — so the
-house is reachable from any page without going via Home.
-
-`MainLayout` fetches the house list client-side (like personas/characters/
-conversations) rather than threading it through every page's `load`. Anything
-that creates or switches a house must dispatch `window.dispatchEvent(new
-CustomEvent('houseUpdated'))` so the switcher refreshes; `invalidateAll()` alone
+**House switcher** (`layout/HouseSwitcher.svelte`) sits top-right in the nav.
+`MainLayout` fetches the house list client-side rather than threading it through
+every page's `load`, so anything that creates or switches a house must dispatch
+`window.dispatchEvent(new CustomEvent('houseUpdated'))` — `invalidateAll()` alone
 won't update it, since the layout's copy isn't page data.
 
-### Prose Formatting
+### Difficulty Dials
 
-**Quotes for speech, asterisks for everything else** — actions, description,
-narration, thoughts. Narration is never left bare. Asterisks inside a quote mark
-emphasis (`"I was *just* about to…"`), which is the only time they appear within
-speech.
+Two are player-facing (General Settings → House Simulation), since how busy the
+house feels is taste rather than balance:
+- `users.houseDriftPercent` (default 25) — chance per tenant per day of a gripe
+- `users.houseEventPercent` (default 28) — chance per pair per phase of an event
 
-`writing_style.txt` also carries a **Length** section: one reply is one beat, two
-or three short paragraphs at most. "Keep descriptions short" alone was satisfied
-by ten short paragraphs — the model stacked action-speech-action-speech into a
-monologue and walked the character across the room four times in one turn. The
-rules are therefore concrete (don't write three spoken lines, don't keep moving,
-leave room to answer) rather than a general plea for brevity, and
-`chat_system.txt` repeats the limit in its closing instruction, which is the last
-thing the model reads.
+Both are **percent integers, 0-100**, and **0 disables that system entirely** —
+the services return early rather than rolling. Constants in `$lib/house/` remain
+the fallback for callers that don't pass a `userId`. `MAX_EVENTS_PER_PHASE` still
+caps the draw, so 100% means "every pair rolls", not "unlimited events".
 
-**Note `{{writing_style}}` is substituted _after_ the other variables** — they
-are chained `.replace()` calls in `replaceTemplateVariables`, with
-`{{writing_style}}` last. So a placeholder written *inside* `writing_style.txt`
-is never expanded; phrase those rules without variables.
+Everything else in `SATISFACTION` and `RELATION` stays a tuned constant.
 
-The rule lives in `data/prompts/writing_style.txt` and reaches prompts via
-`{{writing_style}}`. **Adding it to a prompt is two steps** — the placeholder in
-the `.txt`, *and* a `.replace()` in whichever code path builds that prompt.
-`chat_system.txt` and `action_scene_intro.txt` had neither, which is why chat
-replies and scene intros drifted into bare prose while the `action_*` prompts
-(which say "same format as the conversation") had nothing to match.
+### Activity Pools
 
-Paths that substitute it: `chatGeneration.ts`, `narration.ts` (both
-`generateNarration` and `generateSceneNarration`), `impersonation.ts`, and
-`contentLlmService.generateScenarioGreeting()`.
+Split by what owns them:
 
-### Scene-Based Chat System
+- **Bedroom and away → the character** (`characters.activityPools`, JSON keyed by
+  phase). Every character has a room and can leave, in any house. Edited in the
+  character profile's **Activities** tab.
+- **Shared spaces → the space** (`sharedSpaces.activityPool`, flat JSON
+  `string[]`). The room belongs to the house, so a character can't carry lines
+  for it. Not phase-keyed: what you do in a kitchen barely changes with the hour.
+  Edited from the **Shared Spaces** row on `/house`.
 
-The chat system uses a scene + narrator paradigm where multiple characters can participate:
+Both fall back to the generic lists in `activities.ts` when unset.
 
-**Key Tables:**
-- `sceneParticipants` - Tracks which characters are in each conversation/scene
-  - `conversationId`, `characterId`, `isActive`, `joinedAt`, `leftAt`
-- `conversations.primaryCharacterId` - The main character for a scene
-- `messages.characterId` - Which character sent an assistant message (null for narrator/user)
+**Write with AI** exists for both (`content_activity_pools.txt`,
+`content_space_activities.txt`). Both write into the textareas rather than the
+database, so the result is reviewed before saving.
 
-**Message Roles:**
+The prompt asks for **YAML**, not JSON: the shape is a fixed two-level nest of
+string lists, so models produce it more reliably and one malformed line costs a
+single entry rather than the whole document. `parseActivityYaml()` is hand-rolled
+and forgiving (code fences, quoted values, inline `[a, b]` lists, trailing
+commentary). The endpoint discards any key that isn't a real phase, so a
+hallucinated `dawn:` can never reach stored data.
+
+## Chat Engine
+
+### Scene-Based Chat
+
+Multiple characters can participate in one conversation.
+
+**Key tables:**
+- `sceneParticipants` — `conversationId`, `characterId`, `isActive`, `joinedAt`,
+  `leftAt`
+- `conversations.primaryCharacterId` — the main character for a scene
+- `messages.characterId` — which character sent an assistant message (null for
+  narrator/user)
+
 | Role | Description |
 |------|-------------|
 | `user` | Player messages |
@@ -751,192 +560,192 @@ The chat system uses a scene + narrator paradigm where multiple characters can p
 | `narrator` | AI-generated scene descriptions |
 | `system` | Technical/look command outputs |
 
-**Scene Flow:**
-1. Start chat → Narrator generates scene intro
-2. Primary character delivers greeting
-3. Characters can enter/leave via `/api/chat/[conversationId]/characters/add` and `/remove`
-4. Narrator announces entries/exits
+**Flow:** narrator generates a scene intro → primary character delivers greeting
+→ characters enter/leave via `/api/chat/[conversationId]/characters/add` and
+`/remove` → narrator announces entries and exits.
 
-**Key Service:** `sceneService.ts`
-- `getActiveCharacters(conversationId)` - Characters currently in scene
-- `addCharacterToScene(conversationId, characterId)` - Add character
-- `removeCharacterFromScene(conversationId, characterId)` - Remove character
-- `getPrimaryCharacter(conversationId)` - Get responding character
+`sceneService.ts`: `getActiveCharacters`, `addCharacterToScene`,
+`removeCharacterFromScene`, `getPrimaryCharacter`.
 
-### World State System
+### World State
 
-Tracks dynamic state for characters and environment (mood, position, clothes, etc.) displayed in a collapsible sidebar panel.
+Tracks mood, position, clothes and similar for characters and environment, shown
+in a collapsible sidebar.
 
-**Configuration Files:**
-- `data/config/world_attributes.json` - Defines what attributes to track per entity type
-- `data/prompts/world_generation.txt` - LLM prompt template for generating state
+- `data/config/world_attributes.json` — what to track per entity type
+- `data/prompts/world_generation.txt` — generation prompt
 
-**Attribute Types:**
 | Type | Value | Example |
 |------|-------|---------|
 | `text` | Single string | mood: "cheerful and relaxed" |
-| `list` | Array of {name, description} | clothes: [{name: "dress", description: "blue sundress"}] |
+| `list` | Array of {name, description} | clothes: [{name: "dress", …}] |
 
-**Adding New Attributes:**
-1. Add to `data/config/world_attributes.json` under the appropriate entity (`character` or `user`)
-2. Add to `data/prompts/world_generation.txt` output format and example
-3. Optionally add icon in `ChatWorldPanel.svelte` `getAttributeIcon()` function
+**Adding an attribute:** add to `world_attributes.json`, add to
+`world_generation.txt` output format and example, optionally add an icon in
+`ChatWorldPanel.svelte`'s `getAttributeIcon()`.
 
-**Key Services:**
-- `worldStateGenerationService` (in `clothesGenerationService.ts`) - Generates state via Content LLM
-- `worldInfoService.ts` - CRUD for world state in database (`conversations.worldState` JSON column)
+Services: `worldStateGenerationService` (in `clothesGenerationService.ts`)
+generates via the Content LLM; `worldInfoService.ts` is CRUD over
+`conversations.worldState`.
 
-**Auto-Generation Settings** (in `users` table):
-- `autoWorldStateEnabled` - Generate on new chat start
-- `autoWorldStateMinMessages` / `autoWorldStateMaxMessages` - Periodic regeneration range
+Auto-generation settings on `users`: `autoWorldStateEnabled`,
+`autoWorldStateMinMessages`, `autoWorldStateMaxMessages`.
 
-**UI Component:** `ChatWorldPanel.svelte` - Collapsible sidebar with entity sections, expandable list items, and "look at" action buttons.
+### ChatInput
 
-### Multi-LLM Architecture
+**It hides its action row unless handlers are passed** — `showActions` derives
+from `onSceneAction || onImpersonate || onGenerateImage || onRegenerate`, so a
+page passing only `onSend` silently gets a bare textbox. Scenes wire impersonate,
+regenerate and scene actions; image generation is still unwired.
 
-Four separate LLM configurations, each with its own settings service:
+**It is a two-layer control, and the layers must lay out identically.** A
+transparent textarea (visible caret, transparent text) sits over
+`.rp-input-highlight`, which re-renders the same string with quotes and
+`*actions*` coloured. The caret is drawn by the textarea, so **any style on the
+highlight spans that changes glyph advance widths puts the caret visibly off the
+character it is on**.
+
+`.rp-action` was `font-style: italic` and the system italic face is ~2.6%
+narrower: a long action block pushed everything after it ~29px out of alignment.
+**Colour only in those spans** — never font-style, weight, size, letter-spacing,
+or family. Italic can't be recovered: `oblique 0deg` keeps the metrics but has no
+slant, and every angled `oblique` selects the same narrower face.
+
+To check alignment, compare where each layer paints the same string offset (a
+plain-text mirror div versus a `Range` in the highlight).
+`document.caretPositionFromPoint` is **useless for this** — it queries the
+textarea's own layout and returns the correct offset even when the bug is
+present.
+
+## Prompts
+
+### Prose Formatting
+
+**Quotes for speech, asterisks for everything else** — actions, description,
+narration, thoughts. Narration is never left bare. Asterisks inside a quote mark
+emphasis (`"I was *just* about to…"`), the only time they appear within speech.
+
+`writing_style.txt` also carries a **Length** section: one reply is one beat, two
+or three short paragraphs at most. "Keep descriptions short" alone was satisfied
+by ten short paragraphs, so the rules are concrete (don't write three spoken
+lines, don't keep moving, leave room to answer). `chat_system.txt` repeats the
+limit in its closing instruction, the last thing the model reads.
+
+Paths that substitute `{{writing_style}}`: `chatGeneration.ts`, `narration.ts`
+(both functions), `impersonation.ts`, and
+`contentLlmService.generateScenarioGreeting()`.
+
+**`{{writing_style}}` is substituted _after_ the other variables** (chained
+`.replace()` calls, it goes last), so a placeholder written *inside*
+`writing_style.txt` is never expanded. Phrase those rules without variables.
+
+### Template Substitution
+
+`llm.ts` builds prompts with `{{char}}`, `{{user}}`, `{{description}}`,
+`{{personality}}`, `{{scenario}}`, `{{history}}`, `{{user_description}}`,
+`{{example_dialogue}}`.
+
+**Substitution fails silently.** These are plain `.replace()` calls: a
+placeholder missing from the `.txt` is a no-op, not an error. `chat_system.txt`
+once shipped without `{{history}}`, so every character reply was generated blind.
+The same gap hit `{{user_description}}`, so characters never knew who they were
+talking to.
+
+Two consequences:
+- **Adding a variable to a prompt is two steps** — the placeholder in the `.txt`
+  *and* the substitution in whichever code path builds it.
+- **`logs/prompts/` is ground truth.** The saved prompt is exactly what was sent,
+  so a missing block shows up there immediately. Check it before theorising about
+  model behaviour.
+
+**`replaceTemplateVariables` does NOT substitute `{{history}}`.** Chat paths call
+it and then replace history themselves, so adding it to the shared helper would
+blank the placeholder before they saw it. Callers needing history substitute it
+after the helper returns.
+
+**Optional blocks need `{{#if}}`.** A bare `{{user_description}}` under a heading
+leaves the heading stranded when the bio is empty. `processConditionals` handles
+`{{#if var}}...{{/if}}` and `{{#unless}}`, matching on `\w+`, treating empty
+string as falsy.
+
+**Don't chain `{{#if}}` blocks inline** (`{{/if}}{{#if other}}`). The regex is
+non-greedy, so the first block swallows through the first `{{/if}}` and the next
+`{{#if}}` ends up inside its content, printed as literal text. Put each on its
+own lines.
+
+**Example dialogue is positioned by the template, not appended.** It was once
+concatenated after the whole prompt, putting it *below* the conversation history.
+`chat_system.txt` places it via `{{example_dialogue}}` right after the character
+definition. The code still appends as a fallback when the placeholder is absent.
+
+### Prompt Defaults
+
+`data/prompts/*.txt` are the live prompts. `PROMPT_CONFIG` in
+`src/routes/prompts/+page.svelte` holds a parallel copy used only by "Reset to
+Default" — editing a prompt in the UI writes the file, not the default, so the
+two drift unless deliberately synced. The defaults are kept SFW.
+
+## Multi-LLM Architecture
 
 | LLM Type | Purpose | Settings Service |
 |----------|---------|------------------|
 | **Chat** | Character conversations | `llmSettingsService.ts` |
 | **House Director** | Tenant placement, applicants, house events | `gameMasterSettingsService.ts` |
 | **Content** | Content creation/generation | `contentLlmSettingsService.ts` |
-| **Image** | Generate Danbooru tags for SD | `imageLlmSettingsService.ts` |
+| **Image** | Danbooru tags for SD | `imageLlmSettingsService.ts` |
 
-**NOTE:** The House Director still uses the storage key `gameMaster` throughout
-`llmSettingsFileService.ts` and the settings/prompts UI. This is deliberate — renaming
-the key would orphan existing user settings files. Only the user-facing labels changed.
+**The House Director still uses the storage key `gameMaster`** throughout
+`llmSettingsFileService.ts` and the settings/prompts UI. Renaming it would orphan
+existing user settings files. Only the user-facing labels changed.
 
-**IMPORTANT:** LLM settings are stored in **files** via `llmSettingsFileService.ts`, NOT in the database. The database `llmSettings` table exists but is not used. Always use the service classes (e.g., `llmSettingsService.getSettings()`) to fetch settings.
+**IMPORTANT:** LLM settings are stored in **files** via
+`llmSettingsFileService.ts`, NOT in the database. The `llmSettings` table exists
+but is unused. Always go through the service classes.
 
-**Model pools.** Each LLM type has a single `model` plus an optional
-`models: string[]`. With two or more entries, **one is drawn at random per
-request** — useful for varying prose voice across a long roleplay, or spreading
-load across rate limits. Empty, absent, or single-entry falls back to `model`,
-so every settings file written before this existed behaves exactly as it did.
+**Model pools.** Each type has a single `model` plus an optional
+`models: string[]`. With two or more entries **one is drawn at random per
+request**. Empty, absent, or single-entry falls back to `model`.
 
-`resolveModel()` is the one place that decides, and it is called **per request**
-rather than per session, so a long conversation is spread across the pool rather
-than pinned to whichever model was drawn first.
+`resolveModel()` is the one place that decides, called **per request** rather
+than per session. The catch when adding a call path: **callers that pass
+`model: settings.model` explicitly bypass the pool**, because an explicit model
+always wins in `llmService`. Every generation path resolves through
+`resolveModel` and passes the result, so the log and the request agree.
 
-The catch when adding a new LLM call path: **callers that pass
-`model: settings.model` explicitly bypass the pool entirely**, because an
-explicit model always wins in `llmService`. Every generation path
-(`chatGeneration`, `impersonation`, both narration functions, `llmCallService`)
-resolves through `resolveModel` and passes the result — resolving once per
-request so the log and the actual request agree on which model was used.
+In the UI, `ModelSelector` becomes a multi-select when given `onTogglePool` and
+stays open on click. `LLMSettingsForm` keeps `settings.model` pointing at a pool
+member, since it is still the fallback everything else reads. Applying a preset
+clears the pool.
 
-In the UI, `ModelSelector` becomes a multi-select when given `onTogglePool`; it
-stays open on click, since building a pool is several clicks. `LLMSettingsForm`
-keeps `settings.model` pointing at a pool member, because it is still the
-fallback everything else reads — letting it drift to an unselected model would
-make the displayed choice and the model actually used disagree. Applying a preset
-clears the pool, since a preset names exactly one model.
+Supporting services: `llmService.ts` (retry, max 3, exponential backoff),
+`queueService.ts` (per-provider concurrency), `llmLogService.ts` (last 5
+prompts/responses per type).
 
-### LLM Integration (`src/lib/server/`)
+## Image Generation
 
-- `llm.ts` - Prompt building with template variables: `{{char}}`, `{{user}}`, `{{description}}`, `{{personality}}`, `{{scenario}}`, `{{history}}`
-- `services/llmService.ts` - API calls with retry logic (max 3 retries, exponential backoff)
-- `services/queueService.ts` - Request concurrency control per provider
-- `services/llmLogService.ts` - Stores last 5 prompts/responses per type for debugging
-
-**Template substitution fails silently.** `replaceTemplateVariables` and the
-`{{history}}` replace are plain `.replace()` calls: a placeholder missing from
-the `.txt` is a no-op, not an error. `chat_system.txt` shipped without
-`{{history}}`, so `generateChatCompletion` built the history string on every
-message and then discarded it — every character reply in every chat was
-generated blind, seeing only the card and the scenario. Characters re-introduced
-themselves and ignored what had just been said.
-
-Two consequences worth keeping in mind:
-- **Adding a variable to a prompt is two steps** — the placeholder in the `.txt`
-  *and* the substitution in whichever code path builds it. Same trap as
-  `{{writing_style}}` (see Prose Formatting).
-- **`logs/prompts/` is the ground truth.** The saved prompt is exactly what was
-  sent, so a missing block shows up there immediately. Check it before theorising
-  about model behaviour.
-
-The same gap hit `{{user_description}}` — `getActiveUserInfo()` returns the
-active persona's description (falling back to the profile bio), and
-`chatGeneration` fetched it and used only `.name`, so **the character never knew
-who it was talking to**. Now wired into `replaceTemplateVariables`, so it is
-available to every prompt built through that helper, and used by `chat_system`
-and all four impersonate prompts — impersonation especially, since it writes
-*as* the player. Note `{{description}}` in those prompts is the **character's**
-description, not the player's; they are separate variables.
-
-**Optional blocks need `{{#if}}`.** A bare `{{user_description}}` under a
-heading leaves the heading stranded when the bio is empty. `processConditionals`
-handles `{{#if var}}...{{/if}}` and `{{#unless}}`, matching on `\w+` so
-underscored names work, and treats empty string as falsy.
-
-**Example dialogue is positioned by the template, not appended.** It used to be
-concatenated after the whole prompt, which put it *below* the conversation
-history — the model read how the character speaks after reading what was
-already said. `chat_system.txt` now places it via `{{example_dialogue}}` right
-after the character definition. The code still appends as a fallback when the
-placeholder is absent, so a custom prompt can't silently lose it.
-
-### Image Generation
-
-- `services/imageTagGenerationService.ts` - Generates Danbooru-style tags from conversation context using Image LLM
-
-**The `image_*.txt` prompts had no placeholders at all.** The service built
-character, scenario, history, world state, clothes and the tag library, called
-`replaceTemplateVariables`, and then sent a template that referenced none of
-them — so the Image LLM was asked for "tags for the character in this scene"
-with no scene, and invented everything. They now use `{{char}}`,
-`{{description}}`, `{{scenario}}`, `{{world}}`, `{{char_clothes}}`,
-`{{history}}`, `{{contextual_tags}}` and `{{tag_library}}`.
+`imageTagGenerationService.ts` generates Danbooru-style tags from conversation
+context via the Image LLM. `sdService.ts` handles the Stable Diffusion API
+(txt2img, health check, model listing). Tags are stored per-user in
+`data/tags_{userId}.txt`.
 
 **`{{tag_library}}` is what keeps tags usable.** `data/tags_{userId}.txt` is the
 vocabulary the image model actually understands; without it in the prompt the LLM
-writes plausible-sounding tags that the checkpoint has never seen.
+writes plausible-sounding tags the checkpoint has never seen.
 
-Two traps this exposed:
-- **`replaceTemplateVariables` does NOT substitute `{{history}}`.** The chat
-  paths call it and then replace history themselves, so adding it to the shared
-  helper would blank the placeholder before they ever saw it — silently emptying
-  the conversation out of every chat prompt. Callers needing history substitute
-  it after the helper returns; `imageTagGenerationService` does exactly that.
-- **Don't chain `{{#if}}` blocks inline** (`{{/if}}{{#if other}}`). The regex is
-  non-greedy, so the first block swallows through the first `{{/if}}` and the
-  next `{{#if}}` on that line ends up inside its content, printed as literal
-  text. Put each on its own lines, or omit conditionals where the variable is
-  always supplied — which is what these prompts do.
-- `services/sdService.ts` - Stable Diffusion API integration (txt2img, health check, model listing)
-- Tags are stored per-user in `data/tags_{userId}.txt`
+The `image_*.txt` prompts once had no placeholders at all — the service built
+character, scenario, history, world state, clothes and tag library, then sent a
+template referencing none of them. They now use `{{char}}`, `{{description}}`,
+`{{scenario}}`, `{{world}}`, `{{char_clothes}}`, `{{history}}`,
+`{{contextual_tags}}` and `{{tag_library}}`.
 
-### Authentication
+## Auth, Sockets, Cards
 
-Cookie-based sessions using userId. Password hashing via bcryptjs. Auth logic in `src/lib/server/auth.ts`.
-
-### Socket.IO Integration
-
-Custom Vite plugin integrates Socket.IO. Rooms: `conversation-{conversationId}`. Events: `message`, `typing`.
-
-### Character Cards
-
-Supports v1/v2 formats. Image extraction from PNG metadata via `src/lib/utils/characterImageParser.ts`.
-
-## Database Migrations
-
-When adding new columns to existing tables, `drizzle-kit push` may warn about data loss for NOT NULL columns. To avoid truncating tables, add columns directly with SQLite:
-
-```bash
-sqlite3 local.db "ALTER TABLE table_name ADD COLUMN column_name TYPE NOT NULL DEFAULT value;"
-```
-
-Example adding multiple columns:
-```bash
-sqlite3 local.db "ALTER TABLE users ADD COLUMN auto_world_state_enabled INTEGER NOT NULL DEFAULT 0;"
-sqlite3 local.db "ALTER TABLE users ADD COLUMN auto_world_state_min_messages INTEGER NOT NULL DEFAULT 5;"
-sqlite3 local.db "ALTER TABLE users ADD COLUMN event_recall_days INTEGER NOT NULL DEFAULT 3;"
-sqlite3 local.db "ALTER TABLE users ADD COLUMN house_drift_percent INTEGER NOT NULL DEFAULT 25;"
-sqlite3 local.db "ALTER TABLE users ADD COLUMN house_event_percent INTEGER NOT NULL DEFAULT 28;"
-```
-
-This applies the default to existing rows. Then `drizzle-kit push` will see the columns as already existing.
+- **Auth:** cookie-based sessions using userId, bcryptjs hashing, logic in
+  `src/lib/server/auth.ts`.
+- **Socket.IO:** custom Vite plugin. Rooms: `conversation-{conversationId}`.
+  Events: `message`, `typing`.
+- **Character cards:** v1/v2 formats, image extraction from PNG metadata via
+  `src/lib/utils/characterImageParser.ts`.
 
 ## API Patterns
 
@@ -947,15 +756,13 @@ This applies the default to existing rows. Then `drizzle-kit push` will see the 
 
 ## Styling
 
-**Theme: "Lamplight Amber on Neutral Dark."** All colors are CSS custom properties
-defined in `:root` in `src/app.css` (`--bg-primary`, `--accent-primary`, etc.).
-Use Tailwind classes in components.
+**Theme: "Lamplight Amber on Neutral Dark."** All colors are CSS custom
+properties in `:root` in `src/app.css`. Use Tailwind classes in components.
 
 **The warmth belongs to the accent, not the base.** Backgrounds cover most of the
-screen, so tinting them makes the whole UI read brown — amber then stops feeling
-like lamplight and just becomes the room color. Keep backgrounds and text
-near-neutral (a faint warm breath at most, so amber doesn't clash) and let
-`--accent-primary` carry the character. Don't reintroduce brown backgrounds.
+screen, so tinting them makes the whole UI read brown. Keep backgrounds and text
+near-neutral and let `--accent-primary` carry the character. Don't reintroduce
+brown backgrounds.
 
 | Token | Value | Role |
 |---|---|---|
@@ -970,45 +777,38 @@ near-neutral (a faint warm breath at most, so amber doesn't clash) and let
 All text/background pairs pass WCAG AA (lowest is `--text-muted` on
 `--bg-tertiary` at 4.81:1). Check contrast if you change these.
 
+**Accents run hot on purpose** — lit signage against near-black, not dimmed wood.
+`btn-primary-solid` uses the accents at **full strength with dark text**
+(`#1a1207`) plus a soft outer glow. It previously mixed them 60% with black,
+which turned every primary action brown. Don't reintroduce the black mix.
+
 **Prefer utility values the project already uses.** Tailwind only generates
 classes it finds in source, so a value used nowhere else silently produces no
 CSS. A side panel written with `lg:w-72` (unused anywhere) got no width rule at
-all, expanded to fill its flex row, and crushed the sibling content column to
-zero width — with the markup looking perfectly correct. Side panels use
-`w-full lg:w-80 flex-shrink-0`; copy that rather than inventing a width. When a
-layout misbehaves in a way the markup doesn't explain, check the class actually
+all, expanded to fill its flex row, and crushed the sibling column to zero width
+— with the markup looking correct. Side panels use `w-full lg:w-80 flex-shrink-0`.
+When a layout misbehaves in a way the markup doesn't explain, check the class
 exists in the generated CSS.
 
-**Accents run hot on purpose.** They should read as lit signage against the
-near-black base, not as dimmed wood tones. `btn-primary-solid` therefore uses the
-accents at **full strength with dark text** (`#1a1207`) plus a soft outer glow —
-it previously mixed them 60% with black, which turned every primary action in the
-app into dull brown. Don't reintroduce the black mix.
+**IMPORTANT: never hardcode hex colors in components.** Three deliberate
+exceptions:
+- `src/routes/hero/+page.svelte` — a standalone promo banner that doesn't import
+  `app.css`.
+- `CHARACTER_COLORS` in `ChatMessages.svelte` — per-speaker colors, warm-leaning
+  but spread across hues so several tenants in one room stay distinguishable.
+- `ABSENT_CHARACTER_COLOR` in the same file — one muted grey for housemates
+  mentioned but not in the room.
 
-**IMPORTANT: never hardcode hex colors in components.** Always use the tokens, so
-the theme stays changeable in one place. Two deliberate exceptions:
-- `src/routes/hero/+page.svelte` — a standalone 1280×640 promo banner that does not
-  import `app.css`, so its colors are inline by necessity.
-- `CHARACTER_COLORS` in `ChatMessages.svelte` — per-speaker colors for multi-character
-  scenes. Warm-leaning but spread across hues so several tenants in one room stay
-  distinguishable. Keep contrast high when editing.
-- `ABSENT_CHARACTER_COLOR` in the same file — one muted grey for housemates who
-  are **mentioned but not in the room**.
+**Two tiers of name highlighting.** `sceneCharacters` (in the room) each get a
+distinct palette hue; `knownCharacters` (the rest of the roster) all share
+`ABSENT_CHARACTER_COLOR`. Absent names are added **last**, so anyone who walks in
+keeps their palette colour. Characters talk about housemates now that the prompt
+tells them who those are, and spending palette slots on absent people would make
+the ones actually speaking harder to tell apart.
 
-**Two tiers of name highlighting.** `sceneCharacters` (people in the room) draw
-from the palette and each get a distinct hue; `knownCharacters` (the rest of the
-house roster, supplied by the scene's `load`) all share
-`ABSENT_CHARACTER_COLOR`. Absent names are added to the map **last**, so anyone
-who walks into the scene keeps their palette colour rather than being muted.
-
-The point is that characters talk about their housemates now that the prompt
-tells them who those are — "Zara said she'd fix it" should read as a person.
-Spending palette slots on people who aren't present would make the ones actually
-speaking harder to tell apart, which is what the palette is for.
-
-The default user bubble color (`#e0a458`) is a *user preference* whose factory value
-lives in the `users.userBubbleColor` DB default plus several client fallbacks — change
-all of them together if you change it.
+The default user bubble color (`#e0a458`) is a *user preference* whose factory
+value lives in the `users.userBubbleColor` DB default plus several client
+fallbacks — change all of them together.
 
 ## Environment Variables
 

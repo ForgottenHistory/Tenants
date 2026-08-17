@@ -341,7 +341,7 @@ export const sceneParticipants = sqliteTable('scene_participants', {
 });
 
 // ─────────────────────────────────────────────────────────────
-// House layer — see PLAN.md
+// House layer — see CLAUDE.md
 //
 // Bedrooms and shared spaces are deliberately SEPARATE tables, not one table
 // with a `kind` flag. A bedroom is a lease slot: one tenant, generates rent,
