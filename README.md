@@ -1,22 +1,31 @@
-# DynamicTavern
+# Tenants
 
-AI-powered character chat application with multi-character scenes, dynamic world state tracking, and image generation. Create and chat with AI characters using character cards (V1/V2 format), manage multiple conversations, and configure LLM settings per-engine.
+A management sim. You own a house, tenants arrive and leave
+on leases, and the game is about living alongside a rotating cast of characters.
+
+Screen applicants, interview them at the door, decide who gets the spare room
+then live with the consequences. Tenants have their own routines, form opinions
+about each other while you aren't looking, remember your conversations, and hold
+you to what you promised.
 
 Derived from my AI chat template: https://github.com/ForgottenHistory/AI-Chat-Template
 
 Similar RP app for a digital dating experience: https://github.com/ForgottenHistory/Cupid-AI
 
-![DynamicTavern](images/chat.png)
-
 ## Why
 
-SillyTavern is a great project however I find it bloated yet somehow lacking features at times. I need to use various extensions from different creators spread around on discords to have a more enjoyable RP experience, which still feels "patched together" 
+This project is meant to capture that slice of life or romcom type energy. Drama unfolds from simple events, long held grudges or relationships, promises kept or broken. It's not deadly serious but it's not low stakes either. Characters comment about the house, you and others in a natural way.
 
-Likewise I tried Talemate and was blown away, though it was too complex for me to actually get into.
+Characters just live and go about their day. The isolated nature of a house environment means you'll hear and see things yet some of it is off screen. You can ask around and build a simple story relatively easily. I think this nicely captures a middle between full roleplay and purely chatting.
 
-DynamicTavern is my take on things, simple RP chatting like SillyTavern and dynamic content like Talemate. This is my personal taste, some might agree with my decisions and some might not, that's fine. 
+## Main Features
 
-## Features
+- **A Living House** - Characters lease a room, move about and have complaints
+- **Natural relationships** - Tenants bond and form friendships & enemies over time
+- **Satisfication System** - How a tenant feels about living here. Naturally finds complaints and become mad if ignored
+- **Summaries & Promises** - Summaries are generated from talks, with explicit questions and promises remembered as important information
+- **Common knowledge** - The house layout, housemate personalities and recent events are known to everyone living there.
+- **Personal memories** - Recall, routines and open threads are scoped to the people actually in the room
 
 ### World State Tracking
 
@@ -26,18 +35,13 @@ DynamicTavern is my take on things, simple RP chatting like SillyTavern and dyna
 
 ### Character System
 
-- **Character Cards** - Import V1/V2 character card formats with automatic image extraction from PNG metadata
+- **Character Cards** - Import V1/V2 character card formats
 - **Character Profile** - View and edit all character metadata with AI-powered rewrite functionality
+- **Activity Pools** - What a character does in their own room and while out, per phase. Shared spaces carry their own activity lists instead, since the room belongs to the house. Both can be written with AI
 - **Per-Character Image Settings** - Customize image generation per character:
   - Always-included tags (appearance)
   - Contextual tags (AI chooses based on conversation)
   - Prompt overrides
-
-### User Identity
-
-- **User Personas** - Create multiple personas with custom names, descriptions, and avatars for roleplay
-- **Quick Persona Switching** - Switch between personas from the sidebar
-- **Profile Customization** - Set display name, bio, and avatar for your default profile
 
 ### Chat Features
 
@@ -60,15 +64,15 @@ Separate LLM configurations for different purposes:
 | LLM Type | Purpose |
 |----------|---------|
 | **Chat** | Main conversation engine |
-| **Decision** | Pre-processing decisions before content |
-| **Content** | Rewrites/generates character metadata, world state |
+| **Content** | Scene summaries, threads, character metadata, world state |
 | **Image** | Generates Danbooru-style tags for image generation |
 
 ### LLM Configuration
 
 - **LLM Presets** - Save and load LLM configurations
+- **Model Pools** - Select several models for an engine and one is drawn at random per request, useful for varying prose voice across a long roleplay
 - **Reasoning Support** - Enable extended thinking for supported models
-- **Provider Support** - OpenRouter and Featherless AI providers
+- **Provider Support** - OpenRouter, NanoGPT and Featherless AI providers
 - **Per-Engine Settings** - Temperature, max tokens, context window, etc.
 
 ### Image Generation
@@ -81,12 +85,13 @@ Separate LLM configurations for different purposes:
 
 - **File-Based Prompts** - Edit system prompts through the UI or directly in `data/prompts/`
 - **Logging** - View last 5 prompts/responses per LLM type for debugging
+- **Multiple Houses** - Switch the active house from any page, one is active at a time
 
 ## Tech Stack
 
 - **Framework**: SvelteKit 2 with Svelte 5
 - **Language**: TypeScript
-- **Styling**: Tailwind CSS 4
+- **Styling**: Tailwind CSS 4, dark theme
 - **Database**: SQLite with Drizzle ORM
 - **Real-time**: Socket.IO
 - **LLM Providers**: OpenRouter, Featherless, NanoGPT
