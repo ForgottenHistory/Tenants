@@ -28,8 +28,11 @@ import { relationService } from './relationService';
 import { occupancyService } from './occupancyService';
 import { relationLabel, EVENT_RECALL_DAYS_DEFAULT } from '$lib/house/relations';
 
-/** Room scenes take a place; an interview takes an applicant. */
-export type PlaceKind = 'bedroom' | 'shared' | 'interview';
+/**
+ * Room scenes take a place; an interview takes an applicant; an outing takes a
+ * tenant plus a place and activity the player invents.
+ */
+export type PlaceKind = 'bedroom' | 'shared' | 'interview' | 'outing';
 
 /** Who is in the room right now, with the lease facts the prompt needs. */
 export interface ScenePresence {
@@ -293,6 +296,25 @@ class HouseSceneService {
 			.limit(1);
 
 		if (existing) {
+			// Who is in the room can change while the scene is open — placement can
+			// be overridden by hand, and occupancy is re-read above rather than
+			// frozen at creation. `sceneParticipants` is what the chat engine reads
+			// to decide who may speak, so without this a tenant moved in mid-phase
+			// appears in the prompt but can never reply, and one moved out keeps
+			// talking. Both calls are idempotent and handle rejoining.
+			const presentIds = present.map((p) => p.character.id);
+			const already = await sceneService.getActiveCharacters(existing.conversationId);
+			for (const id of presentIds) {
+				if (!already.some((c) => c.id === id)) {
+					await sceneService.addCharacterToScene(existing.conversationId, id);
+				}
+			}
+			for (const c of already) {
+				if (!presentIds.includes(c.id)) {
+					await sceneService.removeCharacterFromScene(existing.conversationId, c.id);
+				}
+			}
+
 			// Context is frozen into conversation.scenario at creation, but summaries
 			// of *earlier* scenes may have landed since (they generate in the
 			// background after a phase advance). Rebuild so a resumed scene recalls
@@ -463,6 +485,10 @@ class HouseSceneService {
 				.where(eq(conversations.id, conversationId))
 				.limit(1);
 			placeName = who ? `Interview · ${who.name}` : 'Interview';
+		} else if (row.scene.placeKind === 'outing') {
+			// The place is the player's own words, so show it back to them rather
+			// than a generic "Outing".
+			placeName = row.scene.outingPlace ?? 'Out';
 		} else if (row.scene.placeKind === 'bedroom' && row.scene.bedroomId) {
 			const [room] = await db
 				.select()
@@ -513,6 +539,17 @@ class HouseSceneService {
 		if (finished.length === 0) return 0;
 
 		const userInfo = await personaService.getActiveUserInfo(userId);
+
+		// Whether scenes leak into the house at all, and how far. Read once for
+		// the whole batch rather than per scene — this is one advance.
+		const [rumourSettings] = await db
+			.select({ enabled: users.rumoursEnabled, audience: users.rumourAudience })
+			.from(users)
+			.where(eq(users.id, userId))
+			.limit(1);
+		const rumoursEnabled = rumourSettings?.enabled ?? true;
+		const rumourAudience = rumourSettings?.audience === 'everyone' ? 'everyone' : 'home';
+
 		let written = 0;
 
 		for (const scene of finished) {
@@ -555,6 +592,13 @@ class HouseSceneService {
 								)[0]?.name ?? 'a room')
 							: 'a room'
 					}`;
+				} else if (scene.placeKind === 'outing') {
+					// Recall lines read "Wednesday (day 3), Evening, <place>: …", so
+					// naming where they went keeps an outing distinguishable from a
+					// scene in a room once it is only a summary.
+					placeName = scene.outingActivity
+						? `${scene.outingPlace} (out together — ${scene.outingActivity})`
+						: `${scene.outingPlace} (out together)`;
 				} else if (scene.placeKind === 'bedroom' && scene.bedroomId) {
 					const [room] = await db
 						.select()
@@ -600,7 +644,14 @@ class HouseSceneService {
 					participants: cast.map((c) => c.name).join(', ') || 'nobody',
 					transcript,
 					userName: userInfo.name,
-					openThreads
+					openThreads,
+					// Nothing overhears an outing (it isn't in the house) or an
+					// interview (a stranger at the door), so don't spend prompt on
+					// asking about either.
+					wantRumour:
+						rumoursEnabled &&
+						scene.placeKind !== 'outing' &&
+						scene.placeKind !== 'interview'
 				});
 
 				if (record.summary) {
@@ -609,6 +660,50 @@ class HouseSceneService {
 						.set({ summary: record.summary, summarisedAt: new Date() })
 						.where(eq(scenes.id, scene.id));
 					written++;
+				}
+
+				// What carried beyond the room. Only for scenes that happened *in*
+				// the house: an outing is somewhere else entirely and an interview is
+				// a stranger at the door, so in both cases there is nobody around to
+				// overhear anything.
+				if (
+					record.rumour &&
+					rumoursEnabled &&
+					scene.placeKind !== 'outing' &&
+					scene.placeKind !== 'interview'
+				) {
+					// Who was in earshot. On 'home' that is whoever occupancy placed in
+					// the building that phase, minus the people who were in the scene —
+					// they don't need to overhear what they took part in. On 'everyone'
+					// the audience is stored null, which renders for the whole house.
+					let heardBy: number[] = [];
+					if (rumourAudience === 'home') {
+						const atHome = await occupancyService.getForPhase(
+							houseId,
+							scene.day,
+							scene.phase
+						);
+						// Everyone the game placed indoors that phase. `away` is
+						// deliberately skipped: they were out of the building.
+						const indoors = [
+							...Array.from(atHome.bySpace.values()).flat(),
+							...Array.from(atHome.byBedroom.values())
+						];
+						heardBy = indoors
+							.map((p) => p.character.id)
+							.filter((id) => !castIds.includes(id));
+					}
+
+					await relationService.recordRumour(
+						houseId,
+						scene.day,
+						scene.phase,
+						record.rumour,
+						// null = unscoped, which parseHeardBy reads as "the whole house
+						// hears it". That is exactly what the 'everyone' setting means.
+						rumourAudience === 'home' ? heardBy : null,
+						cast[0]?.id ?? null
+					);
 				}
 
 				// New threads. Attributed to a character in the scene — a thread
@@ -904,7 +999,9 @@ class HouseSceneService {
 			place:
 				row.scene.placeKind === 'interview'
 					? 'Interview'
-					: (row.bedroomName ?? row.spaceName ?? 'the house'),
+					: row.scene.placeKind === 'outing'
+						? (row.scene.outingPlace ?? 'Out')
+						: (row.bedroomName ?? row.spaceName ?? 'the house'),
 			summary: row.scene.summary!,
 			summarisedAt: row.scene.summarisedAt,
 			participants: castByConversation.get(row.scene.conversationId) ?? []
@@ -1025,6 +1122,270 @@ class HouseSceneService {
 			created: true,
 			present: []
 		};
+	}
+
+	/**
+	 * Open (or resume) an outing: take one tenant somewhere outside the house.
+	 *
+	 * Every other scene is somewhere the game already knows about — a room, or a
+	 * doorstep. An outing is the one the player invents: they name the place and
+	 * what the two of you are doing there. That makes it the only scene whose
+	 * setting is not derivable from house state, so the place and activity are
+	 * stored on the scene row.
+	 *
+	 * Keyed on (house, day, phase, character) exactly as room scenes are keyed on
+	 * their room: walking back into the same outing this phase resumes it, and
+	 * the next phase is a new one. That also means the place and activity are
+	 * fixed for the phase — going somewhere else is the next phase's outing,
+	 * which is the same rule rooms already follow.
+	 */
+	async resolveOuting(
+		userId: number,
+		houseId: number,
+		characterId: number,
+		place: string,
+		activity: string
+	): Promise<ResolvedScene> {
+		const [house] = await db
+			.select()
+			.from(houses)
+			.where(and(eq(houses.id, houseId), eq(houses.userId, userId)))
+			.limit(1);
+		if (!house) throw new Error('House not found');
+
+		const placeName = place.trim();
+		const activityText = activity.trim();
+		if (!placeName) throw new Error('A place is required');
+
+		// You can only go out with someone who actually lives here. Reads the
+		// tenancy rather than the character so a moved-out tenant can't be taken
+		// for coffee from a stale page.
+		const [row] = await db
+			.select({ tenant: tenants, character: characters })
+			.from(tenants)
+			.innerJoin(characters, eq(tenants.characterId, characters.id))
+			.where(
+				and(
+					eq(tenants.houseId, houseId),
+					eq(tenants.characterId, characterId),
+					eq(tenants.status, 'active')
+				)
+			)
+			.limit(1);
+		if (!row) throw new Error('Tenant not found');
+
+		// Resume this phase's outing with this person, whatever they answered in
+		// the modal — the scene is keyed on who and when, not on what was typed.
+		const [existing] = await db
+			.select({ scene: scenes })
+			.from(scenes)
+			.innerJoin(conversations, eq(scenes.conversationId, conversations.id))
+			.where(
+				and(
+					eq(scenes.houseId, houseId),
+					eq(scenes.day, house.day),
+					eq(scenes.phase, house.phase),
+					eq(scenes.placeKind, 'outing'),
+					eq(conversations.primaryCharacterId, characterId)
+				)
+			)
+			.limit(1);
+
+		const userInfo = await personaService.getActiveUserInfo(userId);
+		const present: ScenePresence[] = [];
+
+		if (existing) {
+			return {
+				scene: existing.scene,
+				conversationId: existing.scene.conversationId,
+				house,
+				placeName: existing.scene.outingPlace ?? placeName,
+				placeKind: 'outing',
+				created: false,
+				present
+			};
+		}
+
+		// An outing is still part of their life here: they carry the same history,
+		// grievances and gossip out of the door with them. Rooms are excluded —
+		// the layout of the house is not the setting any more.
+		const recall = await this.recallFor(houseId, [characterId], userId);
+		const open = await this.openThreadsFor(houseId, [characterId]);
+		const layout = await this.buildLayoutContext(houseId, [characterId], {
+			currentDay: house.day,
+			userId
+		});
+		const context = this.buildOutingContext(
+			house,
+			row.character.name,
+			row.tenant,
+			placeName,
+			activityText,
+			userInfo.name,
+			layout,
+			recall,
+			open
+		);
+
+		const [conversation] = await db
+			.insert(conversations)
+			.values({
+				userId,
+				characterId: row.character.id,
+				primaryCharacterId: row.character.id,
+				isActive: false,
+				scenario: context
+			})
+			.returning();
+
+		await sceneService.addCharacterToScene(conversation.id, row.character.id);
+
+		try {
+			const intro = await generateSceneNarration(userId, conversation.id, 'scene_intro', {
+				characterNames: [row.character.name]
+			});
+			await db.insert(messages).values({
+				conversationId: conversation.id,
+				role: 'narrator',
+				content: intro.content,
+				senderName: 'Narrator',
+				reasoning: intro.reasoning
+			});
+		} catch (error) {
+			console.error('Failed to generate outing intro:', error);
+		}
+
+		const [scene] = await db
+			.insert(scenes)
+			.values({
+				houseId,
+				conversationId: conversation.id,
+				day: house.day,
+				phase: house.phase,
+				placeKind: 'outing',
+				bedroomId: null,
+				sharedSpaceId: null,
+				outingPlace: placeName,
+				outingActivity: activityText || null
+			})
+			.returning();
+
+		return {
+			scene,
+			conversationId: conversation.id,
+			house,
+			placeName,
+			placeKind: 'outing',
+			created: true,
+			present
+		};
+	}
+
+	/**
+	 * Prompt context for an outing.
+	 *
+	 * Deliberately not `buildHouseContext` with a different room name. That
+	 * function's whole frame is "you are in this room of the house, here is who
+	 * else is in it" — every line of it would be wrong here. What carries over is
+	 * the person: their lease, how they feel about living here, what they are
+	 * owed, and what you last talked about.
+	 *
+	 * The place and activity are the player's invention, so they are stated as
+	 * fact and the model is told to treat them as settled rather than negotiate
+	 * them. Without that a character asked to go to the harbour spends the scene
+	 * suggesting they go to the harbour.
+	 */
+	buildOutingContext(
+		house: House,
+		characterName: string,
+		tenant: Tenant,
+		place: string,
+		activity: string,
+		userName: string,
+		layout: string = '',
+		recall: Array<{ day: number; phase: number; place: string; summary: string }> = [],
+		openThreads: Array<{
+			kind: string;
+			summary: string;
+			openedDay: number;
+			dueDay: number | null;
+			characterName: string;
+		}> = []
+	): string {
+		const lines: string[] = [];
+		const home = house.address ? `${house.name} (${house.address})` : house.name;
+
+		lines.push(
+			`${place}. ${weekdayLabel(house.day)}, day ${house.day}, ${phaseLabel(house.phase)}.`
+		);
+		lines.push(
+			`${userName} and ${characterName} have gone out together, away from ${home}. ` +
+				`They are not at the house — this is somewhere else entirely.`
+		);
+		if (activity) {
+			lines.push(`What they are doing: ${activity}.`);
+		}
+		lines.push(
+			`This was ${userName}'s idea and ${characterName} agreed to come. Both of them are ` +
+				`already here, so play the outing as it happens rather than arranging it or ` +
+				`talking about whether to go.`
+		);
+
+		// Who they are when they're not on the clock. A tenant taken out for the
+		// evening still lives in the house and still has whatever is outstanding
+		// hanging over them, but the setting is not a room they rent.
+		const remaining = Math.max(0, tenant.leaseEndDay - house.day);
+		lines.push('');
+		lines.push(
+			`${characterName} rents a room at ${house.name} from ${userName}, who is their ` +
+				`landlord — $${tenant.rentAmount.toLocaleString()} per period, ` +
+				`${remaining} day${remaining === 1 ? '' : 's'} left on the lease. ` +
+				`${satisfactionMood(tenant.satisfaction)}`
+		);
+		lines.push(
+			`Being out together is not the same as being at home: this is social, not a ` +
+				`house inspection. How much that changes ${characterName} is up to them.`
+		);
+
+		// The house they both left is still the thing they have in common, so the
+		// housemates and recent goings-on stay in context as conversation.
+		if (layout) {
+			lines.push('');
+			lines.push(layout);
+		}
+
+		if (recall.length > 0) {
+			lines.push('');
+			lines.push('Earlier:');
+			for (const entry of recall) {
+				lines.push(
+					`- ${weekdayLabel(entry.day)} (day ${entry.day}), ${phaseLabel(entry.phase)}, ` +
+						`${entry.place}: ${entry.summary}`
+				);
+			}
+		}
+
+		if (openThreads.length > 0) {
+			lines.push('');
+			lines.push('Unresolved:');
+			for (const t of openThreads) {
+				const age = house.day - t.openedDay;
+				const when = age <= 0 ? 'today' : age === 1 ? 'since yesterday' : `for ${age} days`;
+				const overdue =
+					t.dueDay !== null && t.dueDay < house.day
+						? ` — was due ${weekdayLabel(t.dueDay)} (day ${t.dueDay}), now overdue`
+						: t.dueDay !== null
+							? ` — due ${weekdayLabel(t.dueDay)} (day ${t.dueDay})`
+							: '';
+				lines.push(
+					t.kind === 'promise'
+						? `- ${userName} promised: ${t.summary}. Outstanding ${when}${overdue}.`
+						: `- ${t.characterName} asked for: ${t.summary}. Unanswered ${when}${overdue}.`
+				);
+			}
+		}
+
+		return lines.join('\n');
 	}
 
 	/**
@@ -1194,10 +1555,15 @@ class HouseSceneService {
 				if (user) daysBack = user.days;
 			}
 
+			// Rumours only reach people who were in earshot. The audience is whoever
+			// this context is being built for — the people in the room — which is
+			// exactly `excludeCharacterIds`, already excluded from the roster above
+			// because they are listed under `Present:` instead.
 			const events = await relationService.recentForContext(
 				houseId,
 				options.currentDay,
-				daysBack
+				daysBack,
+				excludeCharacterIds
 			);
 			if (events.length > 0) {
 				lines.push('');

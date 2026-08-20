@@ -17,6 +17,7 @@ import { eq, and, desc, lte } from 'drizzle-orm';
 import type { House, Bedroom, SharedSpace } from '../db/schema';
 import { DEFAULT_BASE_RENT, DEFAULT_STARTING_BALANCE } from '$lib/house/spacePresets';
 import { nextPhase } from '$lib/house/phases';
+import { LEASE_EXPIRY_ENABLED } from '$lib/house/tenancy';
 import { occupancyService } from './occupancyService';
 import { satisfactionService, type SatisfactionChange } from './satisfactionService';
 import { relationService, type RelationEventResult } from './relationService';
@@ -188,6 +189,10 @@ class HouseService {
 	 * On a day rollover, leases that have reached their end day are settled:
 	 * those tenants move out and their rooms open up. Returns what happened so
 	 * the UI can report it rather than silently changing the roster.
+	 *
+	 * Lease settlement is currently gated off behind `LEASE_EXPIRY_ENABLED`, so
+	 * `movedOut` comes back empty and departures only happen via
+	 * `tenantService.moveOut()`.
 	 */
 	async advancePhase(
 		houseId: number,
@@ -218,24 +223,27 @@ class HouseService {
 			);
 
 			// Leases are checked once per day, not per phase, so a lease ends on
-			// a day rather than at some arbitrary hour.
-			const expiring = await db
-				.select({
-					id: tenants.id,
-					characterId: tenants.characterId,
-					name: characters.name,
-					roomName: bedrooms.name
-				})
-				.from(tenants)
-				.innerJoin(characters, eq(tenants.characterId, characters.id))
-				.leftJoin(bedrooms, eq(tenants.bedroomId, bedrooms.id))
-				.where(
-					and(
-						eq(tenants.houseId, houseId),
-						eq(tenants.status, 'active'),
-						lte(tenants.leaseEndDay, next.day)
-					)
-				);
+			// a day rather than at some arbitrary hour. Gated: with no renewal
+			// step yet, unconditional expiry emptied the house on a timer.
+			const expiring = LEASE_EXPIRY_ENABLED
+				? await db
+						.select({
+							id: tenants.id,
+							characterId: tenants.characterId,
+							name: characters.name,
+							roomName: bedrooms.name
+						})
+						.from(tenants)
+						.innerJoin(characters, eq(tenants.characterId, characters.id))
+						.leftJoin(bedrooms, eq(tenants.bedroomId, bedrooms.id))
+						.where(
+							and(
+								eq(tenants.houseId, houseId),
+								eq(tenants.status, 'active'),
+								lte(tenants.leaseEndDay, next.day)
+							)
+						)
+				: [];
 
 			for (const row of expiring) {
 				await db

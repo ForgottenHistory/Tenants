@@ -18,6 +18,9 @@ and replaced by a purpose-built house/day-cycle game layer.
 - Don't add features that were not part of original request
 - Don't hardcode in arbitrary limits
 - Styling needs to be consistent. Check other similar components first before implementation.
+- Edit files with the Edit/Write tools directly. Don't wrap edits in Python
+  scripts (or sed/heredocs) unless the job genuinely needs it — a bulk
+  mechanical change across many files, or generated content.
 - You can use Python for tools
 - **IMPORTANT: Before writing new code, always check how similar existing code handles the same task.** Look at existing endpoints/components that do similar things and follow their patterns. Don't assume - read the code first.
 
@@ -185,6 +188,31 @@ A tenant **holds a bedroom lease** (`tenants.bedroomId`) but may not **be there
 right now** (`occupancy`). Vacant rooms and absent tenants look different on
 purpose.
 
+**Placement can be overridden by hand** — `occupancyService.placeTenant()`, via
+`POST /api/houses/[houseId]/occupancy` and the **Move Someone** button on
+`/house` (`MoveTenantModal`). The roll is fine for filling a house but useless
+when you want a specific person in a specific room, or two people in one.
+
+It rewrites **one tenant's row for the current phase** and leaves everyone else
+alone — a correction, not a re-roll, which is what separates it from
+`generateForPhase`. **The day and phase come from the house, not the request**,
+so a client can't rewrite history or place someone in the future.
+
+The two invariants `generateForPhase` maintains are enforced here too, as
+**400s** rather than written rows: a tenant may only be placed in **their own**
+bedroom (`getForPhase` keys one presence per room, and a lease is what makes a
+room yours), and a shared space must be unlocked.
+
+**The activity is picked from their pool, not invented.** The modal lists the
+same lines the roll would have drawn from — `bedroomActivityOptions`,
+`awayActivityOptions`, `sharedActivityOptions` in `$lib/house/activities.ts`,
+which list where the existing `*Activity` functions pick, sharing the same
+fallbacks. Left blank, the service rolls one as usual. The field stays free text,
+so a one-off line doesn't require editing the pool.
+
+Tenants in the **Out** section open the modal preselected, since being out is the
+usual reason to reach for this.
+
 ### Room Scenes
 
 Clicking a room opens a conversation with whoever `occupancy` puts there.
@@ -226,6 +254,86 @@ scenario. Gated on `users.worldSidebarEnabled`, **off by default**. Entering a
 scene shows stored state immediately then regenerates, since the clock has
 usually moved; the refresh is chained onto `loadSettings()` because the gate
 isn't known at mount.
+
+### Outings
+
+**The one scene that isn't in the house.** `placeKind: 'outing'` — you take one
+tenant somewhere you name and do something you name. Entered from the **Go Out**
+button on `/house` (header, beside Next Phase) via `GoOutModal`, which asks who,
+where, and optionally what you're doing, then routes to `/scene/[id]`.
+
+**The place and activity are stored as text on the scene** (`scenes.outingPlace`,
+`scenes.outingActivity`), not ids. They're invented per outing; there is no table
+of cafes and adding one would mean authoring a world instead of naming a place.
+
+**Keyed on (house, day, phase, character)** — the character comes from
+`conversations.primaryCharacterId`, as interviews already do, so no extra column.
+Same resume rule as rooms: re-opening within the phase returns the existing
+scene, so the place is **fixed for that phase** and going somewhere else is the
+next phase's outing.
+
+`buildOutingContext` is deliberately **not** `buildHouseContext` with a different
+room name — every line of that function's frame ("you are in this room, here is
+who else is in it") would be wrong. What carries over is the person: lease,
+`satisfactionMood`, `recallFor`, `openThreadsFor`, and the layout block as
+conversation. `occupancy` doesn't apply, so `present` is empty.
+
+The place and activity are **stated as settled fact**, because a character asked
+to go to the harbour otherwise spends the scene suggesting they go to the
+harbour.
+
+Summarisation, threads, satisfaction and the log all work unchanged. Recall lines
+render as `the night market (out together — wandering the food stalls)` so an
+outing stays distinguishable from a room once it's only a summary.
+
+### Rumours
+
+**The middle tier of knowledge.** Scene summaries are scoped to whoever was in
+the room (`recallFor`); house events are common knowledge. A rumour is the
+in-between: something the rest of the house *overheard* rather than witnessed.
+
+**The summariser decides what travels.** The same Content LLM call that writes
+the summary optionally emits a `rumour:` line — one sentence, what a housemate in
+another room would have picked up. The prompt is emphatic that **omitting is the
+usual correct answer**: a quiet conversation, however important, is not news.
+Loud, public, or visibly consequential scenes are.
+
+**Stored as `house_events` with `kind: 'rumour'`, `delta: 0`**, not a new table —
+it reuses the recall window, the log, `HouseLifePanel`, and the day grouping for
+free. It renders in `/house/log` with an `--accent-secondary` dot and a "Word got
+around" prefix so it reads as gossip, not as another off-screen moment.
+
+**`house_events.heardBy` scopes who knows it** — a JSON array of character ids,
+or **null meaning everyone**. Unlike a move-in, a rumour is not automatically
+common knowledge. It is **stored rather than derived**, because occupancy for a
+past phase can be re-rolled and the earshot would change retroactively.
+`parseHeardBy()` treats malformed JSON as null: a broken row is heard by
+everyone rather than silently vanishing.
+
+**Two settings, both on `users`** (General Settings → House Simulation):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `rumoursEnabled` | true | Off skips the prompt block entirely, so no tokens are spent |
+| `rumourAudience` | `'home'` | `'home'` = whoever was indoors that phase; `'everyone'` = the whole house |
+
+The audience is applied at **render** time in `recentForContext(…, audience)`,
+not at write time, so flipping the setting changes what already-stored rumours
+reach the prompt — which is what a settings toggle should do.
+
+**The cast is excluded from `heardBy`.** People who were in the scene remember it
+properly through `recallFor`; feeding them the gossip version too would have them
+recount a garbled second-hand account of their own conversation.
+
+**Outings and interviews never produce rumours.** `wantRumour` is false for both,
+so the prompt block isn't even rendered. An outing happens away from the house —
+nobody there could have overheard it — and an applicant at the door isn't
+household news yet.
+
+The prompt block is gated with `{{#if rumours}}` / `{{#unless rumours}}` in
+`content_scene_summary.txt`, driven by `processConditionals` (exported from
+`promptUtils` for this). `parseSceneRecord` accepts `rumour` or `rumor` and
+normalises to the former, since the model spells it both ways.
 
 ### Scene Memory
 

@@ -1,6 +1,6 @@
 import { contentLlmSettingsService } from './contentLlmSettingsService';
 import { weekdayLabel } from '$lib/house/phases';
-import { loadWritingStyle } from '../llm/promptUtils';
+import { loadWritingStyle, processConditionals } from '../llm/promptUtils';
 import { callLlm } from './llmCallService';
 import fs from 'fs/promises';
 import path from 'path';
@@ -9,6 +9,11 @@ const PROMPTS_DIR = 'data/prompts';
 
 export interface SceneRecord {
 	summary: string;
+	/**
+	 * The one line that travels beyond the room, when anything does. Empty for
+	 * most scenes — the prompt is explicit that silence is the usual answer.
+	 */
+	rumour: string;
 	opened: Array<{ kind: string; who: string; what: string; due?: number }>;
 	resolved: Array<{ id: number; how: string }>;
 }
@@ -27,10 +32,11 @@ function parseSceneRecord(raw: string): SceneRecord {
 	const lines = body.split('\n');
 
 	let summary = '';
+	let rumour = '';
 	const opened: SceneRecord['opened'] = [];
 	const resolved: SceneRecord['resolved'] = [];
 
-	type Section = 'summary' | 'opened' | 'resolved';
+	type Section = 'summary' | 'rumour' | 'opened' | 'resolved';
 	let section: Section | null = null;
 	let current: Record<string, string> | null = null;
 
@@ -55,11 +61,16 @@ function parseSceneRecord(raw: string): SceneRecord {
 		if (!line.trim()) continue;
 
 		// A new top-level key ends whatever list was being read.
-		const top = line.match(/^(summary|opened|resolved)\s*:\s*(.*)$/i);
+		const top = line.match(/^(summary|rumour|rumor|opened|resolved)\s*:\s*(.*)$/i);
 		if (top) {
 			flush();
-			section = top[1].toLowerCase() as Section;
-			if (section === 'summary') summary = top[2].replace(/^["']|["']$/g, '').trim();
+			// Accept the American spelling too: the prompt says "rumour", but a
+			// model that normalises it to "rumor" shouldn't silently lose the line.
+			const key = top[1].toLowerCase();
+			section = (key === 'rumor' ? 'rumour' : key) as Section;
+			const value = top[2].replace(/^["']|["']$/g, '').trim();
+			if (section === 'summary') summary = value;
+			else if (section === 'rumour') rumour = value;
 			continue;
 		}
 
@@ -77,14 +88,16 @@ function parseSceneRecord(raw: string): SceneRecord {
 			continue;
 		}
 
-		// A bare continuation line belongs to a multi-line summary.
+		// A bare continuation line belongs to whichever scalar block is open.
 		if (section === 'summary' && !current) {
 			summary = `${summary} ${line.trim()}`.trim();
+		} else if (section === 'rumour' && !current) {
+			rumour = `${rumour} ${line.trim()}`.trim();
 		}
 	}
 	flush();
 
-	return { summary, opened, resolved };
+	return { summary, rumour, opened, resolved };
 }
 
 /**
@@ -235,7 +248,8 @@ class ContentLlmService {
 		participants,
 		transcript,
 		userName,
-		openThreads = 'None.'
+		openThreads = 'None.',
+		wantRumour = true
 	}: {
 		place: string;
 		day: number;
@@ -245,6 +259,13 @@ class ContentLlmService {
 		userName: string;
 		/** Rendered "id. kind — what" lines, so the model can close them by id. */
 		openThreads?: string;
+		/**
+		 * Whether to ask for a rumour. False for scenes nobody could overhear
+		 * (outings, interviews) and when the player has rumours switched off — in
+		 * both cases the block is stripped from the prompt rather than the answer
+		 * being discarded afterwards.
+		 */
+		wantRumour?: boolean;
 	}): Promise<SceneRecord> {
 		try {
 			console.log(`📝 Content LLM summarising scene in ${place} (day ${day}, ${phase})...`);
@@ -252,7 +273,9 @@ class ContentLlmService {
 			const settings = contentLlmSettingsService.getSettings();
 			const promptTemplate = await this.loadPrompt('scene_summary');
 
-			const prompt = promptTemplate
+			// Conditionals first: the rumour block is dropped entirely for scenes
+			// nobody could overhear, rather than asked for and thrown away.
+			const prompt = processConditionals(promptTemplate, { rumours: wantRumour })
 				.replace(/\{\{place\}\}/gi, place)
 				.replace(/\{\{weekday\}\}/gi, weekdayLabel(day))
 				.replace(/\{\{day\}\}/gi, String(day))
@@ -271,7 +294,8 @@ class ContentLlmService {
 			const record = parseSceneRecord(response);
 			console.log(
 				`📝 Content LLM finished summarising scene ` +
-					`(+${record.opened.length} open, -${record.resolved.length} resolved)`
+					`(+${record.opened.length} open, -${record.resolved.length} resolved` +
+					`${record.rumour ? ', rumour' : ''})`
 			);
 			return record;
 		} catch (error: any) {

@@ -64,8 +64,9 @@ export const load: PageServerLoad = async ({ cookies }) => {
 
 	// What the housemates have been doing off-screen, where they stand, and the
 	// scenes that have been condensed into memory.
-	const [houseEvents, relations, sceneSummaries] = await Promise.all([
+	const [houseEvents, rumours, relations, sceneSummaries] = await Promise.all([
 		relationService.getRecentEvents(activeHouse.id),
+		relationService.getRecentRumours(activeHouse.id),
 		relationService.getHouseRelations(activeHouse.id),
 		houseSceneService.getSummarisedScenes(activeHouse.id, 20)
 	]);
@@ -83,6 +84,7 @@ export const load: PageServerLoad = async ({ cookies }) => {
 		openThreads,
 		expiring,
 		houseEvents,
+		rumours,
 		relations,
 		sceneSummaries
 	};

@@ -1,6 +1,6 @@
 import { db } from '../db';
 import { relations, houseEvents, tenants, characters, users } from '../db/schema';
-import { eq, and, or, desc, gte, inArray } from 'drizzle-orm';
+import { eq, and, or, desc, gte, ne, inArray } from 'drizzle-orm';
 import {
 	RELATION,
 	RELATION_EVENTS,
@@ -9,6 +9,25 @@ import {
 	formatRelationEvent
 } from '$lib/house/relations';
 import { phaseId } from '$lib/house/phases';
+
+/**
+ * Read a rumour's stored audience.
+ *
+ * Null means "everyone" — either the row predates the column, or it was
+ * recorded while the audience setting was 'everyone'. A malformed value is
+ * treated the same way: losing a rumour to a parse error is worse than showing
+ * it too widely, since the alternative is a line of gossip nobody ever hears.
+ */
+function parseHeardBy(raw: string | null): number[] | null {
+	if (!raw) return null;
+	try {
+		const parsed = JSON.parse(raw);
+		if (!Array.isArray(parsed)) return null;
+		return parsed.filter((id): id is number => typeof id === 'number');
+	} catch {
+		return null;
+	}
+}
 
 /** One off-screen moment, as it happened, for reporting back to the UI. */
 export interface RelationEventResult {
@@ -242,6 +261,43 @@ class RelationService {
 	}
 
 	/**
+	 * Record something that carried beyond the room it happened in.
+	 *
+	 * A scene summary is private to whoever was there. A rumour is the one line
+	 * that leaked — stored as a house event so it flows through the same recall
+	 * window, log and panel as everything else, but scoped by `heardBy` because
+	 * unlike a move-in it is not automatically common knowledge.
+	 *
+	 * `delta: 0` — overhearing a row doesn't move anyone's relation with anyone;
+	 * it only changes what they know.
+	 */
+	async recordRumour(
+		houseId: number,
+		day: number,
+		phase: number,
+		text: string,
+		/** Who was in earshot, or null for "the whole house hears it". */
+		heardBy: number[] | null,
+		subjectId: number | null
+	): Promise<void> {
+		if (!text.trim()) return;
+
+		await db.insert(houseEvents).values({
+			houseId,
+			day,
+			phase,
+			kind: 'rumour',
+			// Whoever the rumour is about, so it shows on their side of the log.
+			characterAId: subjectId,
+			characterBId: null,
+			text: text.trim(),
+			delta: 0,
+			heardBy: heardBy === null ? null : JSON.stringify(heardBy),
+			createdAt: new Date()
+		});
+	}
+
+	/**
 	 * What the house has been talking about lately, oldest first.
 	 *
 	 * Scoped by **days back from the current day**, not a fixed count: "the last
@@ -257,7 +313,18 @@ class RelationService {
 	 * window controls *how far back*, the cap stops a single wild week from
 	 * swallowing the context window.
 	 */
-	async recentForContext(houseId: number, currentDay: number, daysBack: number) {
+	async recentForContext(
+		houseId: number,
+		currentDay: number,
+		daysBack: number,
+		/**
+		 * Who this context is being built for. Rumours are the one event kind
+		 * that isn't automatically common knowledge, so they're dropped unless
+		 * one of these characters was in earshot. Empty means "no audience
+		 * filter" — used by the log and panels, which show the player everything.
+		 */
+		audience: number[] | null = null
+	) {
 		if (daysBack <= 0) return [];
 
 		// Inclusive of today: daysBack = 1 means "today only".
@@ -269,15 +336,52 @@ class RelationService {
 			.where(and(eq(houseEvents.houseId, houseId), gte(houseEvents.day, earliestDay)))
 			.orderBy(desc(houseEvents.day), desc(houseEvents.phase), desc(houseEvents.id))
 			.limit(EVENT_HARD_CAP);
-		return rows.reverse();
+
+		const visible =
+			audience === null
+				? rows
+				: rows.filter((row) => {
+						if (row.kind !== 'rumour') return true;
+						// Null heardBy means everyone — either the 'everyone' setting was
+						// in force when it was recorded, or the row predates the column.
+						if (!row.heardBy) return true;
+						const heard = parseHeardBy(row.heardBy);
+						return heard === null || audience.some((id) => heard.includes(id));
+					});
+
+		return visible.reverse();
 	}
 
-	/** Recent events, newest first. Backs both the house panel and the log page. */
+	/**
+	 * Recent events, newest first, **excluding rumours**.
+	 *
+	 * Rumours are a different kind of thing — something the house overheard about
+	 * you, not an off-screen moment between housemates — and they carry no delta,
+	 * so mixed into this list they read as a neutral relation event. The house
+	 * panel shows them separately via `getRecentRumours`. The log page still wants
+	 * everything interleaved by day and uses `getAllEvents`.
+	 */
 	async getRecentEvents(houseId: number, limit = 20) {
 		return await db
 			.select()
 			.from(houseEvents)
-			.where(eq(houseEvents.houseId, houseId))
+			.where(and(eq(houseEvents.houseId, houseId), ne(houseEvents.kind, 'rumour')))
+			.orderBy(desc(houseEvents.day), desc(houseEvents.phase), desc(houseEvents.id))
+			.limit(limit);
+	}
+
+	/**
+	 * Rumours only, newest first — what the house has been saying about you.
+	 *
+	 * Unscoped by earshot on purpose: this is the player's own panel, and the
+	 * player hears everything. `recentForContext` is where `heardBy` decides who
+	 * among the characters actually knows.
+	 */
+	async getRecentRumours(houseId: number, limit = 6) {
+		return await db
+			.select()
+			.from(houseEvents)
+			.where(and(eq(houseEvents.houseId, houseId), eq(houseEvents.kind, 'rumour')))
 			.orderBy(desc(houseEvents.day), desc(houseEvents.phase), desc(houseEvents.id))
 			.limit(limit);
 	}

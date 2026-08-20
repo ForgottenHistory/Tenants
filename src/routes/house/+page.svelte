@@ -6,6 +6,8 @@
 	import HouseAgendaPanel from '$lib/components/house/HouseAgendaPanel.svelte';
 	import HouseLifePanel from '$lib/components/house/HouseLifePanel.svelte';
 	import RelationDetailModal from '$lib/components/house/RelationDetailModal.svelte';
+	import GoOutModal from '$lib/components/house/GoOutModal.svelte';
+	import MoveTenantModal from '$lib/components/house/MoveTenantModal.svelte';
 	import { phaseLabel, PHASES_PER_DAY, weekdayLabel, isWeekend } from '$lib/house/phases';
 	import { satisfactionLabel, satisfactionColor } from '$lib/house/tenancy';
 
@@ -181,6 +183,81 @@
 		}
 	}
 
+	// Going out is the one scene the house doesn't already know the setting for:
+	// the player names the place and the activity, so it starts in a modal rather
+	// than from a room tile.
+	let goOutOpen = $state(false);
+	let goingOut = $state(false);
+
+	async function goOut(characterId: number, place: string, activity: string) {
+		if (goingOut) return;
+		goingOut = true;
+		error = null;
+
+		try {
+			const response = await fetch(`/api/houses/${house.id}/outings`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ characterId, place, activity })
+			});
+			const result = await response.json();
+
+			if (!response.ok) {
+				error = result.error ?? 'Could not head out';
+				goOutOpen = false;
+				return;
+			}
+
+			await goto(`/scene/${result.conversationId}`);
+		} catch {
+			error = 'Network error. Please try again.';
+			goOutOpen = false;
+		} finally {
+			goingOut = false;
+		}
+	}
+
+	let movePersonOpen = $state(false);
+	let moving = $state(false);
+	/** Set when the modal is opened from a specific person, so they start picked. */
+	let moveInitialTenantId = $state<number | null>(null);
+
+	async function movePerson(
+		tenantId: number,
+		placeKind: 'bedroom' | 'shared' | 'away',
+		placeId: number | null,
+		activity: string
+	) {
+		if (moving) return;
+		moving = true;
+		error = null;
+
+		try {
+			const response = await fetch(`/api/houses/${house.id}/occupancy`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ tenantId, placeKind, placeId, activity })
+			});
+			const result = await response.json();
+
+			if (!response.ok) {
+				error = result.error ?? 'Could not move them';
+				movePersonOpen = false;
+				return;
+			}
+
+			movePersonOpen = false;
+			// The whole board changes — who is in which room, and whether a bedroom
+			// is now enterable — so reload rather than patching presence by hand.
+			await invalidateAll();
+		} catch {
+			error = 'Network error. Please try again.';
+			movePersonOpen = false;
+		} finally {
+			moving = false;
+		}
+	}
+
 	async function advance() {
 		if (advancing || isEmpty) return;
 		advancing = true;
@@ -293,6 +370,31 @@
 								{:else}
 									Next Phase &rarr;
 								{/if}
+							</button>
+						{/if}
+						<!-- The one way out of the house. Hidden when nobody lives here,
+						     since an outing needs someone to go with. -->
+						{#if !isEmpty}
+							<button
+								onclick={() => (goOutOpen = true)}
+								disabled={advancing || entering !== null}
+								class="btn-secondary px-5 py-2.5 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
+							>
+								Go Out
+							</button>
+						{/if}
+						<!-- Overrides the placement roll for this phase. Same visibility rule
+						     as Go Out: needs someone to move. -->
+						{#if !isEmpty}
+							<button
+								onclick={() => {
+									moveInitialTenantId = null;
+									movePersonOpen = true;
+								}}
+								disabled={advancing || entering !== null}
+								class="btn-secondary px-5 py-2.5 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
+							>
+								Move Someone
 							</button>
 						{/if}
 						<!-- Moving tenants in and out is only reachable from here now that
@@ -473,8 +575,16 @@
 					</h2>
 					<div class="flex flex-wrap gap-2">
 						{#each data.presence.away as p (p.occupancy.id)}
-							<div
-								class="flex items-center gap-2.5 pl-2 pr-4 py-2 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border-primary)]"
+							<!-- Someone being out is the usual reason to override placement,
+							     so their row opens the move modal already pointed at them. -->
+							<button
+								type="button"
+								onclick={() => {
+									moveInitialTenantId = p.tenant.id;
+									movePersonOpen = true;
+								}}
+								title="Move {p.character.name}"
+								class="flex items-center gap-2.5 pl-2 pr-4 py-2 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border-primary)] text-left hover:border-[var(--accent-primary)] transition"
 							>
 								{#if p.character.imageData || p.character.thumbnailData}
 									<img
@@ -489,7 +599,7 @@
 										<p class="text-xs text-[var(--text-muted)] truncate">{p.occupancy.activity}</p>
 									{/if}
 								</div>
-							</div>
+							</button>
 						{/each}
 					</div>
 				</section>
@@ -580,6 +690,7 @@
 					/>
 					<HouseLifePanel
 						events={data.houseEvents}
+						rumours={data.rumours}
 						relations={data.relations}
 						sceneSummaries={data.sceneSummaries}
 						onOpenRelation={(rel) => (openRelation = rel)}
@@ -639,5 +750,24 @@
 		houseId={house.id}
 		relation={openRelation}
 		onClose={() => (openRelation = null)}
+	/>
+
+	<GoOutModal
+		open={goOutOpen}
+		tenants={data.tenants}
+		going={goingOut}
+		onClose={() => (goOutOpen = false)}
+		onGo={goOut}
+	/>
+
+	<MoveTenantModal
+		open={movePersonOpen}
+		tenants={data.tenants}
+		spaces={data.summary.spaces}
+		phase={house.phase}
+		initialTenantId={moveInitialTenantId}
+		{moving}
+		onClose={() => (movePersonOpen = false)}
+		onMove={movePerson}
 	/>
 </MainLayout>

@@ -147,10 +147,12 @@ export async function generateChatCompletion(
 		finalSystemPrompt = exampleBlock ? `${systemPrompt}\n\n${exampleBlock}` : systemPrompt;
 	}
 
-	// Add custom system prompt if present (after everything)
-	if (characterData.system_prompt) {
-		finalSystemPrompt += `\n\n${characterData.system_prompt}`;
-	}
+	// The card's own `system_prompt` is deliberately NOT appended. It landed after
+	// everything else — including the length and formatting rules that close
+	// chat_system.txt — so a card carrying its own instructions silently
+	// overrode them, and cards written for other frontends routinely do.
+	// Personality and voice already come through description/personality/example
+	// dialogue; this field was only ever a second, unreviewed system prompt.
 
 	// Add lorebook/world info context based on conversation keywords
 	const lorebookContext = await lorebookService.buildLorebookContext(

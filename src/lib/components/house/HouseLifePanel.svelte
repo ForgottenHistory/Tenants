@@ -30,6 +30,10 @@
 
 	interface Props {
 		events: HouseEvent[];
+		/** What the house overheard about you. Distinct from events: a rumour is
+		    about the player, carries no delta, and is the only thing here that came
+		    out of a scene you actually played. */
+		rumours?: HouseEvent[];
 		relations: RelationRow[];
 		/** Condensed scenes — what the characters actually remember. */
 		sceneSummaries?: SceneSummary[];
@@ -41,6 +45,7 @@
 
 	let {
 		events,
+		rumours = [],
 		relations,
 		sceneSummaries = [],
 		showAllHref = '/house/log',
@@ -54,6 +59,7 @@
 	// for. Clicking a row opens that one rather than expanding the whole list.
 	let openSummaryId = $state<number | null>(null);
 	let recentSummaries = $derived(sceneSummaries.slice(0, 5));
+	let recentRumours = $derived(rumours.slice(0, 4));
 </script>
 
 <aside
@@ -90,6 +96,34 @@
 				</div>
 			</div>
 		{/each}
+	{/if}
+
+	<!-- Word Going Around: rumours the summariser pulled out of your own scenes.
+	     Kept out of the event list above because they are about you rather than
+	     between housemates, and because a delta-coloured dot would paint a rumour
+	     green — they carry no delta. Burnt orange throughout, matching /house/log. -->
+	{#if recentRumours.length > 0}
+		<div class="border-t border-[var(--border-primary)]">
+			<h3 class="px-4 py-3 text-xs uppercase tracking-[0.15em] text-[var(--accent-secondary)]">
+				Word Going Around
+			</h3>
+			{#each recentRumours as rumour (rumour.id)}
+				<div
+					class="flex items-start gap-2.5 px-4 py-2.5 border-b border-[var(--border-primary)] last:border-b-0"
+				>
+					<span
+						class="mt-1.5 w-1.5 h-1.5 rounded-full flex-shrink-0"
+						style="background: var(--accent-secondary)"
+					></span>
+					<div class="min-w-0 flex-1">
+						<p class="text-sm text-[var(--text-secondary)] leading-snug">{rumour.text}</p>
+						<p class="text-xs text-[var(--text-muted)] mt-0.5">
+							{weekdayShort(rumour.day)} {rumour.day} · {phaseLabel(rumour.phase)}
+						</p>
+					</div>
+				</div>
+			{/each}
+		</div>
 	{/if}
 
 	<!-- What the characters remember: the condensed version of scenes you played,

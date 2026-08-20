@@ -19,6 +19,8 @@
 	let eventRecallDays = $state(EVENT_RECALL_DAYS_DEFAULT);
 	let houseDriftPercent = $state(25);
 	let houseEventPercent = $state(28);
+	let rumoursEnabled = $state(true);
+	let rumourAudience = $state<'home' | 'everyone'>('home');
 	let autoWorldStateEnabled = $state(false);
 	let autoWorldStateMinMessages = $state(5);
 	let autoWorldStateMaxMessages = $state(12);
@@ -65,6 +67,8 @@
 				eventRecallDays = data.eventRecallDays ?? EVENT_RECALL_DAYS_DEFAULT;
 				houseDriftPercent = data.houseDriftPercent ?? 25;
 				houseEventPercent = data.houseEventPercent ?? 28;
+				rumoursEnabled = data.rumoursEnabled ?? true;
+				rumourAudience = data.rumourAudience === 'everyone' ? 'everyone' : 'home';
 				autoWorldStateEnabled = data.autoWorldStateEnabled ?? false;
 				autoWorldStateMinMessages = data.autoWorldStateMinMessages ?? 5;
 				autoWorldStateMaxMessages = data.autoWorldStateMaxMessages ?? 12;
@@ -91,7 +95,7 @@
 				fetch('/api/settings', {
 					method: 'PUT',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor })
+					body: JSON.stringify({ chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, rumoursEnabled, rumourAudience, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor })
 				}),
 				fetch('/api/writing-style', {
 					method: 'PUT',
@@ -103,7 +107,7 @@
 			if (settingsRes.ok && writingStyleRes.ok) {
 				message = { type: 'success', text: 'Settings saved successfully!' };
 				// Dispatch event so chat components can react
-				window.dispatchEvent(new CustomEvent('settingsUpdated', { detail: { chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor } }));
+				window.dispatchEvent(new CustomEvent('settingsUpdated', { detail: { chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, rumoursEnabled, rumourAudience, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor } }));
 			} else {
 				const data = await settingsRes.json();
 				message = { type: 'error', text: data.error || 'Failed to save settings' };
@@ -665,6 +669,76 @@
 										</p>
 									{/if}
 								</div>
+
+								<!-- Rumours. Scene summaries are private to whoever was there;
+								     this is the one line that leaks out of the room. -->
+								<label class="flex items-center justify-between p-4 rounded-xl border border-[var(--border-primary)] hover:border-[var(--border-secondary)] transition cursor-pointer">
+									<div>
+										<p class="font-medium text-[var(--text-primary)]">Rumours</p>
+										<p class="text-sm text-[var(--text-muted)] mt-1">
+											Let loud or dramatic scenes carry beyond the room they happened in, so
+											other tenants know something went on. Quiet conversations stay private.
+										</p>
+									</div>
+									<button
+										type="button"
+										role="switch"
+										aria-checked={rumoursEnabled}
+										aria-label="Toggle rumours"
+										onclick={() => rumoursEnabled = !rumoursEnabled}
+										class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 {rumoursEnabled ? 'bg-[var(--accent-primary)]' : 'bg-[var(--bg-tertiary)]'}"
+									>
+										<span
+											class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform {rumoursEnabled ? 'translate-x-6' : 'translate-x-1'}"
+										></span>
+									</button>
+								</label>
+
+								{#if rumoursEnabled}
+									<div
+										class="p-4 ml-6 rounded-xl border border-[var(--border-primary)] bg-[var(--bg-primary)]/50"
+									>
+										<p class="font-medium text-[var(--text-primary)]">Who hears them</p>
+										<p class="text-sm text-[var(--text-muted)] mt-1 mb-3">
+											Applies to rumours already recorded, not just new ones.
+										</p>
+										<div class="space-y-2">
+											<button
+												type="button"
+												onclick={() => (rumourAudience = 'home')}
+												class="w-full text-left p-3 rounded-lg border transition {rumourAudience ===
+												'home'
+													? 'border-[var(--accent-primary)] bg-[var(--bg-tertiary)]'
+													: 'border-[var(--border-primary)] hover:border-[var(--border-secondary)]'}"
+											>
+												<p class="text-sm font-medium text-[var(--text-primary)]">
+													Whoever was home
+												</p>
+												<p class="text-xs text-[var(--text-muted)] mt-0.5">
+													Only tenants who were in the house that phase. A bedroom is more
+													private than the kitchen, and an empty house keeps a secret.
+												</p>
+											</button>
+											<button
+												type="button"
+												onclick={() => (rumourAudience = 'everyone')}
+												class="w-full text-left p-3 rounded-lg border transition {rumourAudience ===
+												'everyone'
+													? 'border-[var(--accent-primary)] bg-[var(--bg-tertiary)]'
+													: 'border-[var(--border-primary)] hover:border-[var(--border-secondary)]'}"
+											>
+												<p class="text-sm font-medium text-[var(--text-primary)]">Everyone</p>
+												<p class="text-xs text-[var(--text-muted)] mt-0.5">
+													The whole house finds out, wherever it happened and whoever was in.
+												</p>
+											</button>
+										</div>
+										<p class="text-xs text-[var(--text-muted)] mt-3">
+											Rumours age out on the same window as house events ({eventRecallDays}
+											{eventRecallDays === 1 ? 'day' : 'days'}), set under Scene Memory.
+										</p>
+									</div>
+								{/if}
 							</div>
 						</div>
 

@@ -44,6 +44,16 @@ export const users = sqliteTable('users', {
 	// an off-screen moment between housemates. 0 disables that system entirely.
 	houseDriftPercent: integer('house_drift_percent').notNull().default(25),
 	houseEventPercent: integer('house_event_percent').notNull().default(28),
+	// Who overhears a rumour: 'home' (only tenants the game placed in the house
+	// that phase) or 'everyone' (the whole roster, however private the room).
+	//
+	// Read at render time rather than baked into the row, so flipping it changes
+	// what already-stored rumours reach — which is what a settings toggle should
+	// do. 'home' makes a bedroom genuinely more private than the kitchen.
+	rumourAudience: text('rumour_audience').notNull().default('home'),
+	// Whether the summariser is asked for a rumour at all. Off means no rumour
+	// line in the prompt and none stored — the scene stays entirely private.
+	rumoursEnabled: integer('rumours_enabled', { mode: 'boolean' }).notNull().default(true),
 	// User message color customization
 	userBubbleColor: text('user_bubble_color').notNull().default('#e0a458'),
 	userTextColor: text('user_text_color').notNull().default('#ffffff'),
@@ -536,6 +546,13 @@ export const scenes = sqliteTable('scenes', {
 	// when placeKind is 'interview'. Nulled if the applicant row goes away
 	// (accepted or passed) so the transcript survives the decision it informed.
 	applicantId: integer('applicant_id').references(() => applicants.id, { onDelete: 'set null' }),
+	// Outings are scenes that happen away from the house: you take one tenant
+	// somewhere you pick and do something you pick. Both are freeform text
+	// rather than ids because they are invented per outing — there is no table
+	// of cafes, and inventing one would mean authoring a world instead of just
+	// naming a place. Set only when placeKind is 'outing'.
+	outingPlace: text('outing_place'),
+	outingActivity: text('outing_activity'),
 	// Written once, when the phase advances and the scene can no longer change.
 	// Null means either "nothing happened here" or "not summarised yet".
 	summary: text('summary'),
@@ -648,6 +665,16 @@ export const houseEvents = sqliteTable('house_events', {
 	text: text('text').notNull(),
 	/** How this moved the pair's relation, for display in the log. */
 	delta: integer('delta').notNull().default(0),
+	// Who was in the building when this happened, as a JSON array of character
+	// ids. Only set for rumours: everything else in this table is common
+	// knowledge and renders for everyone.
+	//
+	// Stored rather than derived because occupancy for a past phase can change
+	// out from under us — a tenant who moves out has their rows deleted from
+	// today forward — and a rumour's audience is fixed at the moment it was
+	// overheard. Null means "everyone", which is what a rumour recorded before
+	// this column existed has to fall back to.
+	heardBy: text('heard_by'),
 	createdAt: integer('created_at', { mode: 'timestamp' })
 		.notNull()
 		.$defaultFn(() => new Date())

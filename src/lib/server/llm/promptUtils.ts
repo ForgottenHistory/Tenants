@@ -122,7 +122,7 @@ export async function loadNarrationPromptFromFile(type: NarrationType): Promise<
  * Process conditional blocks in template
  * Supports: {{#if variable}}...{{/if}} and {{#unless variable}}...{{/unless}}
  */
-function processConditionals(template: string, variables: Record<string, any>): string {
+export function processConditionals(template: string, variables: Record<string, any>): string {
 	let result = template;
 
 	// Process {{#if variable}}...{{/if}} blocks

@@ -22,7 +22,17 @@
 	// everything that happened in it — the off-screen moments and the
 	// conversations you actually played — rather than two disconnected lists.
 	type LogEntry =
-		| { kind: 'event'; key: string; day: number; phase: number; text: string; delta: number }
+		| {
+				kind: 'event';
+				key: string;
+				day: number;
+				phase: number;
+				text: string;
+				delta: number;
+				/** The stored event kind, so a rumour can read as gossip rather than
+				    as another off-screen moment between housemates. */
+				eventKind: string;
+		  }
 		| {
 				kind: 'scene';
 				key: string;
@@ -42,7 +52,8 @@
 				day: e.day,
 				phase: e.phase,
 				text: e.text,
-				delta: e.delta
+				delta: e.delta,
+				eventKind: e.kind
 			})),
 			...data.sceneSummaries.map((s) => ({
 				kind: 'scene' as const,
@@ -150,13 +161,18 @@
 											>
 												<span
 													class="mt-1.5 w-1.5 h-1.5 rounded-full flex-shrink-0"
-													style="background: {entry.delta >= 0
-														? 'var(--success)'
-														: 'var(--error)'}"
+													style="background: {entry.eventKind === 'rumour'
+														? 'var(--accent-secondary)'
+														: entry.delta >= 0
+															? 'var(--success)'
+															: 'var(--error)'}"
 												></span>
 												<div class="min-w-0 flex-1">
 													<p class="text-sm text-[var(--text-primary)] leading-snug">{entry.text}</p>
 													<p class="text-xs text-[var(--text-muted)] mt-0.5">
+														{#if entry.eventKind === 'rumour'}
+															<span class="text-[var(--accent-secondary)]">Word got around</span> ·
+														{/if}
 														{phaseLabel(entry.phase)}
 													</p>
 												</div>

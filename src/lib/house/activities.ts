@@ -91,6 +91,31 @@ export function sharedActivity(kind: string, pool?: string[] | null): string {
 	return pick(SHARED_ACTIVITIES[key]);
 }
 
+/**
+ * The bedroom lines available for a phase, rather than one drawn from them.
+ *
+ * `bedroomActivity` picks; this lists. Moving someone by hand needs the whole
+ * pool on screen to choose from, and falls back to the generic list exactly as
+ * the picker does so the offered options match what the roll could have given.
+ */
+export function bedroomActivityOptions(phase: PhaseId, pools?: ActivityPools): string[] {
+	const own = pools?.bedroom?.[phase];
+	return own && own.length > 0 ? [...own] : [...DEFAULT_BEDROOM[phase]];
+}
+
+/** The away lines available for a phase. See `bedroomActivityOptions`. */
+export function awayActivityOptions(phase: PhaseId, pools?: ActivityPools): string[] {
+	const own = pools?.away?.[phase];
+	return own && own.length > 0 ? [...own] : [...DEFAULT_AWAY[phase]];
+}
+
+/** The lines available in a shared space. See `bedroomActivityOptions`. */
+export function sharedActivityOptions(kind: string, pool?: string[] | null): string[] {
+	if (pool && pool.length > 0) return [...pool];
+	const key: SpaceKind = (kind as SpaceKind) in SHARED_ACTIVITIES ? (kind as SpaceKind) : 'other';
+	return [...SHARED_ACTIVITIES[key]];
+}
+
 /** Parse a space's stored pool, tolerating null and malformed data. */
 export function parseSpacePool(raw: string | null | undefined): string[] {
 	if (!raw) return [];

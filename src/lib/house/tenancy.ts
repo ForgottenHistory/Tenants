@@ -19,6 +19,22 @@ export function estimateTokens(text: string): number {
 export const DEFAULT_LEASE_DAYS = 30;
 
 /**
+ * Whether a lease running out actually moves the tenant out on day rollover.
+ *
+ * Off for now. Expiry was the only automatic departure in the game, and it
+ * fired unconditionally: a tenant at 95 satisfaction left on the same day as
+ * one at 5, with no renewal step and nothing the player could do about it, so
+ * everyone housed simply vanished within DEFAULT_LEASE_DAYS. Until there is a
+ * renewal decision to run at that moment, leases are kept as a displayed term
+ * rather than a hard eviction — moving out stays a deliberate act via
+ * `tenantService.moveOut()`.
+ *
+ * Turning this back on restores the old behaviour exactly; the expiry code is
+ * gated, not removed.
+ */
+export const LEASE_EXPIRY_ENABLED = false;
+
+/**
  * How close a lease has to be to expiry before the house panel flags it.
  * Roughly a week's notice — long enough to do something about it.
  */

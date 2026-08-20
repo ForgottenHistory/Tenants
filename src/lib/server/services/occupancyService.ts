@@ -202,6 +202,122 @@ class OccupancyService {
 	}
 
 	/**
+	 * Put one tenant somewhere for the current phase, overriding the roll.
+	 *
+	 * Placement is otherwise a weighted random draw, which is fine for filling a
+	 * house but useless when the player wants a specific person in a specific room
+	 * — to talk to them, or to put two people together and see what happens.
+	 *
+	 * Rewrites that tenant's row for the day/phase and leaves everyone else's
+	 * alone, so this is a correction rather than a re-roll. Delete-then-insert
+	 * because a tenant has at most one row per phase and the shape differs by
+	 * `placeKind` — the same reason `generateForPhase` clears before writing.
+	 *
+	 * The two invariants `generateForPhase` maintains are enforced here too: a
+	 * tenant can only be placed in their *own* bedroom, and a shared space must be
+	 * unlocked. A caller asking for anything else gets an error rather than a row
+	 * the rest of the house layer would have to defend against.
+	 */
+	async placeTenant(
+		houseId: number,
+		tenantId: number,
+		day: number,
+		phase: number,
+		target: { placeKind: 'bedroom' | 'shared' | 'away'; placeId?: number | null; activity?: string }
+	): Promise<Occupancy> {
+		const [tenant] = await db
+			.select()
+			.from(tenants)
+			.where(
+				and(
+					eq(tenants.id, tenantId),
+					eq(tenants.houseId, houseId),
+					eq(tenants.status, 'active')
+				)
+			)
+			.limit(1);
+
+		if (!tenant) throw new Error('Tenant not found');
+
+		const id = phaseId(phase);
+		const [pools] = await db
+			.select({ activityPools: characters.activityPools })
+			.from(characters)
+			.where(eq(characters.id, tenant.characterId))
+			.limit(1);
+		const parsedPools = parseActivityPools(pools?.activityPools);
+
+		const chosen = target.activity?.trim();
+		let row: typeof occupancy.$inferInsert;
+
+		if (target.placeKind === 'bedroom') {
+			// Their own room only. Someone else's bedroom would break the one-tenant
+			// -per-bedroom read in `getForPhase`, which keys a single presence per
+			// room, and a lease is what makes a room yours.
+			if (!tenant.bedroomId) throw new Error('That tenant has no room of their own');
+			if (target.placeId != null && target.placeId !== tenant.bedroomId) {
+				throw new Error('A tenant can only be placed in their own bedroom');
+			}
+			row = {
+				houseId,
+				tenantId,
+				day,
+				phase,
+				placeKind: 'bedroom',
+				bedroomId: tenant.bedroomId,
+				sharedSpaceId: null,
+				activity: chosen || bedroomActivity(id, parsedPools),
+				createdAt: new Date()
+			};
+		} else if (target.placeKind === 'shared') {
+			const [space] = await db
+				.select()
+				.from(sharedSpaces)
+				.where(and(eq(sharedSpaces.id, Number(target.placeId)), eq(sharedSpaces.houseId, houseId)))
+				.limit(1);
+			if (!space) throw new Error('Shared space not found');
+			if (!space.unlocked) throw new Error('That space is not open yet');
+			row = {
+				houseId,
+				tenantId,
+				day,
+				phase,
+				placeKind: 'shared',
+				bedroomId: null,
+				sharedSpaceId: space.id,
+				activity: chosen || sharedActivity(space.kind, parseSpacePool(space.activityPool)),
+				createdAt: new Date()
+			};
+		} else {
+			row = {
+				houseId,
+				tenantId,
+				day,
+				phase,
+				placeKind: 'away',
+				bedroomId: null,
+				sharedSpaceId: null,
+				activity: chosen || awayActivity(id, parsedPools),
+				createdAt: new Date()
+			};
+		}
+
+		await db
+			.delete(occupancy)
+			.where(
+				and(
+					eq(occupancy.houseId, houseId),
+					eq(occupancy.tenantId, tenantId),
+					eq(occupancy.day, day),
+					eq(occupancy.phase, phase)
+				)
+			);
+
+		const [written] = await db.insert(occupancy).values(row).returning();
+		return written;
+	}
+
+	/**
 	 * What these characters have been doing over the last few days.
 	 *
 	 * `occupancy` is an append-only log, so a tenant's own recent history is
