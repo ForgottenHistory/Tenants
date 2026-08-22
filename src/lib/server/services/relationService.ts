@@ -4,11 +4,19 @@ import { eq, and, or, desc, gte, ne, inArray } from 'drizzle-orm';
 import {
 	RELATION,
 	RELATION_EVENTS,
+	EVENT_KINDS,
 	EVENT_HARD_CAP,
+	EVENT_INTENSITY,
 	clampRelation,
-	formatRelationEvent
+	relationLabel,
+	rollIntensity,
+	rollDelta,
+	intensityOf,
+	formatRelationEvent,
+	type EventIntensity
 } from '$lib/house/relations';
 import { phaseId } from '$lib/house/phases';
+import { houseDirectorService, type DirectorMoment } from './houseDirectorService';
 
 /**
  * Read a rumour's stored audience.
@@ -181,19 +189,69 @@ class RelationService {
 		const chosen = candidates.slice(0, RELATION.MAX_EVENTS_PER_PHASE);
 		const results: RelationEventResult[] = [];
 
-		for (const [a, b] of chosen) {
-			const event = pool[Math.floor(Math.random() * pool.length)];
+		const kinds = EVENT_KINDS[phaseId(phase)] ?? [];
 
+		// Everything above and inside this map is the game deciding what happened:
+		// which pairs, how many, who acted, whether it went well, and how much it
+		// mattered. The Director only ever writes the prose for those decisions.
+		const rolled = chosen.map(([a, b], index) => {
 			// Which of the pair is the actor is itself a coin flip, so "{a} ate
 			// {b}'s leftovers" doesn't always fall on whoever has the lower id.
 			const [actor, other] = Math.random() < 0.5 ? [a, b] : [b, a];
-			const text = formatRelationEvent(event.text, actor.name, other.name);
+
+			// Valence stays a roll rather than the Director's call: it is the half
+			// of the event that actually moves the score, and the whole point of
+			// the split is that the dice own the game and the LLM owns the wording.
+			const positive = Math.random() < 0.5;
+			const intensity = rollIntensity();
+
+			// The fallback is drawn from the same valence and tier the roll picked,
+			// so switching the Director off — or having it fail — produces an event
+			// of the same weight rather than a differently-sized one. A tier with no
+			// authored line of that sign falls back to the whole matching-sign pool,
+			// since the pools were written before tiers existed and are thin at the
+			// extremes.
+			const sameSign = pool.filter((e) => e.delta > 0 === positive);
+			const inTier = sameSign.filter((e) => intensityOf(e.delta) === intensity);
+			const drawFrom = inTier.length > 0 ? inTier : sameSign.length > 0 ? sameSign : pool;
+
+			return {
+				// One-based, matching how the prompt numbers them: a model handed a
+				// list starting at 0 tends to answer starting at 1 regardless.
+				id: index + 1,
+				actor,
+				other,
+				positive,
+				intensity,
+				kind: kinds.length > 0 ? kinds[Math.floor(Math.random() * kinds.length)] : '',
+				fallback: drawFrom[Math.floor(Math.random() * drawFrom.length)],
+				// The delta the roll intends. Used as-is for a Director line, since
+				// the Director is writing to this tier as a constraint.
+				delta: rollDelta(intensity, positive)
+			};
+		});
+
+		// Ask the House Director to write them, when the player has it on. Returns
+		// only what came back usable — anything missing keeps its static line, so a
+		// failed, slow or partial response costs flavour and nothing else.
+		const written = await this.writeMoments(houseId, day, phase, userId, rolled);
+
+		for (const { id, actor, other, fallback, delta: rolledDelta } of rolled) {
+			const moment = written.get(id);
+			const text = moment?.text ?? formatRelationEvent(fallback.text, actor.name, other.name);
+
+			// The delta belongs to whichever line is actually used. A Director line
+			// was written to the rolled tier, so it takes the rolled delta; a
+			// fallback line carries its own authored number, which is what that
+			// sentence was written to mean. Crossing them would attach a magnitude
+			// to a moment it was not written for.
+			const delta = moment ? rolledDelta : fallback.delta;
 
 			const { before, after } = await this.adjust(
 				houseId,
 				actor.characterId,
 				other.characterId,
-				event.delta
+				delta
 			);
 
 			await db.insert(houseEvents).values({
@@ -204,13 +262,13 @@ class RelationService {
 				characterAId: actor.characterId,
 				characterBId: other.characterId,
 				text,
-				delta: event.delta,
+				delta,
 				createdAt: new Date()
 			});
 
 			results.push({
 				text,
-				delta: event.delta,
+				delta,
 				characterAName: actor.name,
 				characterBName: other.name,
 				scoreBefore: before,
@@ -219,6 +277,78 @@ class RelationService {
 		}
 
 		return results;
+	}
+
+	/**
+	 * Hand the rolled pairs to the House Director, when the player has it on.
+	 *
+	 * Split out of `generateForPhase` so the roll above stays readable as the
+	 * thing that decides the game, and this stays readable as the thing that only
+	 * decides wording. Returns an empty map when the Director is off, when the
+	 * call fails, or when the context can't be built — every one of which leaves
+	 * the caller on the static pools.
+	 */
+	private async writeMoments(
+		houseId: number,
+		day: number,
+		phase: number,
+		userId: number | undefined,
+		rolled: Array<{
+			id: number;
+			actor: { characterId: number; name: string };
+			other: { characterId: number; name: string };
+			positive: boolean;
+			intensity: EventIntensity;
+			kind: string;
+		}>
+	): Promise<Map<number, DirectorMoment>> {
+		const empty = new Map<number, DirectorMoment>();
+		if (userId === undefined || rolled.length === 0) return empty;
+
+		const [user] = await db
+			.select({ enabled: users.houseDirectorEnabled })
+			.from(users)
+			.where(eq(users.id, userId))
+			.limit(1);
+		if (!user?.enabled) return empty;
+
+		try {
+			// Imported lazily: `houseSceneService` imports this module, so a static
+			// import here would close a cycle. Deferring it to the one call path that
+			// needs it keeps module init order irrelevant.
+			const { houseSceneService } = await import('./houseSceneService');
+
+			// The same context a character gets in a scene, so the moments follow
+			// from who these people are and what has already happened between them.
+			// No exclusions: everyone in the house is fair game to write about.
+			const houseContext = await houseSceneService.buildLayoutContext(houseId, [], {
+				currentDay: day,
+				userId
+			});
+
+			const pairs = await Promise.all(
+				rolled.map(async (r) => ({
+					id: r.id,
+					actorName: r.actor.name,
+					otherName: r.other.name,
+					standing: relationLabel(
+						await this.getScore(houseId, r.actor.characterId, r.other.characterId)
+					).toLowerCase(),
+					// Handed over as constraints, not suggestions: the Director writes a
+					// line that matches this shape rather than choosing the shape.
+					outcome: r.positive ? 'it went well' : 'it did not go well',
+					weight: EVENT_INTENSITY[r.intensity].label,
+					kind: r.kind
+				}))
+			);
+
+			return await houseDirectorService.writeMoments({ day, phase, houseContext, pairs });
+		} catch (error: any) {
+			// Building the context is a handful of queries and can fail on its own.
+			// Same rule as the Director call itself: the clock still moves.
+			console.error(`❌ House Director context failed:`, error?.message ?? error);
+			return empty;
+		}
 	}
 
 	/**

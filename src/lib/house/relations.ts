@@ -127,6 +127,113 @@ export function formatRelationEvent(text: string, aName: string, bName: string):
 }
 
 /**
+ * How much a moment mattered.
+ *
+ * Rolled, not chosen: a model asked to pick its own magnitude drifts to the
+ * middle, so left to itself the Director produces an endless run of 5s and
+ * nobody ever reaches a band. Rolling the tier first and handing it over as a
+ * constraint is what makes a genuine blowup — or a real kindness — possible.
+ */
+export type EventIntensity = 'minor' | 'notable' | 'major';
+
+/**
+ * The tiers, their delta ranges, and how often each comes up.
+ *
+ * `major` deliberately reaches past the old ceiling of 8. Under a flat 4-8
+ * spread, positives and negatives cancel and a pair drifts around Neutral
+ * forever — the Close and Hostile bands at ±60 were effectively unreachable.
+ * The rare big event is what actually moves a pair somewhere.
+ *
+ * Weights are symmetric across valence: a major event is as likely to be a row
+ * as a kindness, so a house can genuinely go bad if the dice run cold. That is
+ * what makes Hostile mean something when you see it.
+ */
+export const EVENT_INTENSITY: Record<
+	EventIntensity,
+	{ min: number; max: number; weight: number; label: string }
+> = {
+	minor: { min: 2, max: 4, weight: 55, label: 'small — barely worth mentioning' },
+	notable: { min: 5, max: 8, weight: 33, label: 'notable — they will both remember it' },
+	major: { min: 10, max: 15, weight: 12, label: 'major — a real row, or real generosity' }
+};
+
+/** Draw an intensity tier by weight. */
+export function rollIntensity(): EventIntensity {
+	const tiers = Object.entries(EVENT_INTENSITY) as Array<
+		[EventIntensity, (typeof EVENT_INTENSITY)[EventIntensity]]
+	>;
+	const total = tiers.reduce((sum, [, t]) => sum + t.weight, 0);
+	let roll = Math.random() * total;
+	for (const [id, tier] of tiers) {
+		roll -= tier.weight;
+		if (roll <= 0) return id;
+	}
+	return 'minor';
+}
+
+/** A delta for this tier and direction, rolled within the tier's range. */
+export function rollDelta(intensity: EventIntensity, positive: boolean): number {
+	const { min, max } = EVENT_INTENSITY[intensity];
+	const magnitude = min + Math.floor(Math.random() * (max - min + 1));
+	return positive ? magnitude : -magnitude;
+}
+
+/** Which tier an authored delta belongs to, so the static pools sort themselves. */
+export function intensityOf(delta: number): EventIntensity {
+	const magnitude = Math.abs(delta);
+	if (magnitude >= EVENT_INTENSITY.major.min) return 'major';
+	if (magnitude >= EVENT_INTENSITY.notable.min) return 'notable';
+	return 'minor';
+}
+
+/**
+ * What kind of thing happened, as a prompt for the Director rather than a line
+ * of text.
+ *
+ * The static pools carry ~8 finished sentences per phase, so the same coffee
+ * and the same leftovers come round every few days. Handing the Director a
+ * *type* instead lets it write a different specific moment each time while
+ * still being told what shape the moment takes.
+ *
+ * Keyed by phase for the same reason the pools are: the bathroom queue is a
+ * morning problem and noise through the wall is a night one.
+ */
+export const EVENT_KINDS: Record<PhaseId, string[]> = {
+	morning: [
+		'a conversation over breakfast',
+		'the bathroom or the hot water',
+		'a small favour, done or not done',
+		'noise, timing, or someone still asleep',
+		'the state of the kitchen',
+		'leaving the house at the same time'
+	],
+	afternoon: [
+		'running into each other out of the house',
+		'a favour asked or returned',
+		'chores, or whose turn it was',
+		'borrowing something',
+		'a conversation that went somewhere unexpected',
+		'shared space being used by one of them'
+	],
+	evening: [
+		'cooking, or food',
+		'a long conversation on the couch',
+		'plans, guests, or someone having people over',
+		'something they watched or did together',
+		'a disagreement that had been building',
+		'one of them needing something from the other'
+	],
+	night: [
+		'noise late at night',
+		'one of them getting home late',
+		'a quiet conversation neither expected to have',
+		'locking up, lights, or the state of the house',
+		'crossing paths on the landing',
+		'one of them waiting up, or worrying'
+	]
+};
+
+/**
  * What kind of thing happened. `relation` is the off-screen moment between two
  * housemates; the others are household facts that everyone living here would
  * simply know, and which characters should be able to mention.

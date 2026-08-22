@@ -44,6 +44,16 @@ export const users = sqliteTable('users', {
 	// an off-screen moment between housemates. 0 disables that system entirely.
 	houseDriftPercent: integer('house_drift_percent').notNull().default(25),
 	houseEventPercent: integer('house_event_percent').notNull().default(28),
+	// Whether the House Director writes the off-screen moments rather than
+	// drawing them from the static pools in `$lib/house/relations.ts`.
+	//
+	// Purely a flavour switch: the rolls above still decide WHICH pairs have a
+	// moment and how many, so turning this on changes how an event reads, never
+	// how often one happens or how the game plays. Off by default because it
+	// spends tokens and adds latency to every phase advance.
+	houseDirectorEnabled: integer('house_director_enabled', { mode: 'boolean' })
+		.notNull()
+		.default(false),
 	// Who overhears a rumour: 'home' (only tenants the game placed in the house
 	// that phase) or 'everyone' (the whole roster, however private the room).
 	//

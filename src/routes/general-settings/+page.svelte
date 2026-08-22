@@ -19,6 +19,7 @@
 	let eventRecallDays = $state(EVENT_RECALL_DAYS_DEFAULT);
 	let houseDriftPercent = $state(25);
 	let houseEventPercent = $state(28);
+	let houseDirectorEnabled = $state(false);
 	let rumoursEnabled = $state(true);
 	let rumourAudience = $state<'home' | 'everyone'>('home');
 	let autoWorldStateEnabled = $state(false);
@@ -67,6 +68,7 @@
 				eventRecallDays = data.eventRecallDays ?? EVENT_RECALL_DAYS_DEFAULT;
 				houseDriftPercent = data.houseDriftPercent ?? 25;
 				houseEventPercent = data.houseEventPercent ?? 28;
+				houseDirectorEnabled = data.houseDirectorEnabled ?? false;
 				rumoursEnabled = data.rumoursEnabled ?? true;
 				rumourAudience = data.rumourAudience === 'everyone' ? 'everyone' : 'home';
 				autoWorldStateEnabled = data.autoWorldStateEnabled ?? false;
@@ -95,7 +97,7 @@
 				fetch('/api/settings', {
 					method: 'PUT',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, rumoursEnabled, rumourAudience, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor })
+					body: JSON.stringify({ chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, houseDirectorEnabled, rumoursEnabled, rumourAudience, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor })
 				}),
 				fetch('/api/writing-style', {
 					method: 'PUT',
@@ -107,7 +109,7 @@
 			if (settingsRes.ok && writingStyleRes.ok) {
 				message = { type: 'success', text: 'Settings saved successfully!' };
 				// Dispatch event so chat components can react
-				window.dispatchEvent(new CustomEvent('settingsUpdated', { detail: { chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, rumoursEnabled, rumourAudience, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor } }));
+				window.dispatchEvent(new CustomEvent('settingsUpdated', { detail: { chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, houseDirectorEnabled, rumoursEnabled, rumourAudience, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor } }));
 			} else {
 				const data = await settingsRes.json();
 				message = { type: 'error', text: data.error || 'Failed to save settings' };
@@ -669,6 +671,38 @@
 										</p>
 									{/if}
 								</div>
+
+								<!-- House Director. Flavour only: the slider above still decides
+								     which pairs have a moment and how many. This decides who
+								     writes the line. -->
+								<label class="flex items-center justify-between p-4 rounded-xl border border-[var(--border-primary)] hover:border-[var(--border-secondary)] transition cursor-pointer">
+									<div>
+										<p class="font-medium text-[var(--text-primary)]">House Director</p>
+										<p class="text-sm text-[var(--text-muted)] mt-1">
+											Let the AI write the housemate events above, using who your tenants
+											actually are and what has happened between them, instead of drawing
+											from a fixed list. Costs a request each time you advance the phase.
+										</p>
+									</div>
+									<button
+										type="button"
+										role="switch"
+										aria-checked={houseDirectorEnabled}
+										aria-label="Toggle House Director"
+										onclick={() => houseDirectorEnabled = !houseDirectorEnabled}
+										class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 {houseDirectorEnabled ? 'bg-[var(--accent-primary)]' : 'bg-[var(--bg-tertiary)]'}"
+									>
+										<span
+											class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform {houseDirectorEnabled ? 'translate-x-6' : 'translate-x-1'}"
+										></span>
+									</button>
+								</label>
+
+								{#if houseDirectorEnabled && houseEventPercent === 0}
+									<p class="text-xs text-[var(--warning)] ml-6 -mt-2">
+										Housemate events are off, so the Director has nothing to write.
+									</p>
+								{/if}
 
 								<!-- Rumours. Scene summaries are private to whoever was there;
 								     this is the one line that leaks out of the room. -->

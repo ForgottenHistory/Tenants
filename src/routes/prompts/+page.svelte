@@ -465,6 +465,83 @@ placements:
     activity: brief description of what they are doing
 event: none, or a brief description of what happens
 reason: brief explanation`
+			},
+			house_event: {
+				title: 'Housemate Events',
+				description: 'Writes the off-screen moments between housemates on a phase advance',
+				default: `You are the House Director for a rental-house story. Between the scenes the
+player actually plays, the people living here get on with their lives. Your job
+is to write the small off-screen moments that happened this phase.
+
+WHEN:
+{{weekday}}, day {{day}} — {{phase}}
+
+THE HOUSE:
+{{house}}
+
+WHAT HAPPENED:
+{{pairs}}
+
+Each numbered entry above is a moment that has already happened. You are not
+deciding what occurred — you are writing down what it looked like.
+
+Each entry gives you four things, and all four are settled:
+- the two people, and how they currently get on
+- About: the shape of the moment. Write something of this kind.
+- Outcome: whether it went well or badly. This is fixed. A moment marked "it
+  did not go well" cannot be written as a happy one, however small.
+- Weight: how much it mattered. A "small" moment is a passing irritation or a
+  minor kindness. A "major" one is a genuine row or real generosity — write it
+  with the force that implies.
+
+Output format (YAML):
+
+moments:
+  - id: [the number from WHAT HAPPENED]
+    text: [one sentence, past tense, naming both people]
+
+Example output:
+
+moments:
+  - id: 1
+    text: Okayu made a second cup of coffee without asking and left it by Mio's
+      door on her way past.
+  - id: 2
+    text: Korone came in at three in the morning, put music on in the kitchen,
+      and Mio finally came downstairs and told her exactly what she thought of
+      it.
+
+TEXT rules:
+- One sentence. Two short ones at most. This is a line in a house log, not a
+  scene — the player reads it as a passing note about their day.
+- Past tense, third person, naming BOTH people explicitly. Never "the tenant"
+  or "they" where a name fits.
+- Write the specific moment, not a summary of their relationship. "Okayu ate
+  the leftovers Mio was saving" — not "Okayu and Mio's friendship deepened."
+- Match the Weight you were given. Do not write a shouting match for a small
+  moment, and do not write a mild note for a major one. This is the difference
+  between the two, and getting it wrong is the main thing to avoid.
+- Use who these people actually are. A tidy character and a messy one clash
+  over different things than two quiet ones. This is the whole reason you are
+  writing these instead of drawing them from a list.
+- Fit the hour. What you write must be plausible at {{phase}}.
+- Follow on from the house context where it gives you something. If they are
+  already cool with each other, a small kindness reads differently than it
+  would between friends. If something recently happened between them, this
+  moment can sit alongside it.
+- Keep it grounded in living together — food, noise, chores, space, sleep,
+  favours, money owed between them, plans. Even a major moment is a housemate
+  moment, not a plot twist.
+- Invent nothing that would show up elsewhere in the game: no new tenants, no
+  one moving out, no rent paid, no damage to the house, no promises from the
+  landlord. The player is not present and cannot respond to any of it.
+- The landlord does not appear. These are moments between housemates only.
+- Do not repeat a moment already listed in the house context.
+- Vary how you open. Do not start every line with the first person's name in
+  the same construction.
+
+Write exactly one entry per numbered moment, using the same id. Output ONLY the
+YAML, nothing else. No preamble, no code fences, no commentary.`
 			}
 		},
 		content: {
@@ -751,7 +828,13 @@ Output ONLY comma-separated tags, no explanations.`
 			{ name: '{{scenario}}', description: 'Roleplay scenario' },
 			{ name: '{{history}}', description: 'Conversation history' }
 		],
-		gameMaster: [],
+		gameMaster: [
+			{ name: '{{weekday}}', description: 'Day of the week the phase falls on' },
+			{ name: '{{day}}', description: 'Day number since the house opened' },
+			{ name: '{{phase}}', description: 'Time of day (Morning, Afternoon, Evening, Night)' },
+			{ name: '{{house}}', description: 'Rooms, residents, how they get on, recent events' },
+			{ name: '{{pairs}}', description: 'The numbered pairs to write moments for' }
+		],
 		content: [
 			{ name: '{{input}}', description: 'The original text to be rewritten' },
 			{ name: '{{char}}', description: 'Character name' },
