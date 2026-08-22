@@ -81,6 +81,78 @@
 				entries: [...list].sort((x, y) => y.phase - x.phase)
 			}));
 	});
+
+	/**
+	 * The log as plain text.
+	 *
+	 * Written oldest-first, the reverse of the screen: the page is a feed you
+	 * check, but a saved file is a history you read from the beginning. Built
+	 * from the same `byDay` grouping so the export can't drift from what is
+	 * displayed.
+	 */
+	function buildExport(): string {
+		const lines: string[] = [];
+
+		lines.push(`${data.house.name} — House Log`);
+		lines.push(`Day ${data.house.day}, ${weekdayLabel(data.house.day)}`);
+		lines.push(`${data.events.length} events · ${data.sceneSummaries.length} scenes`);
+		lines.push(`Exported ${new Date().toLocaleString()}`);
+		lines.push('');
+
+		for (const group of [...byDay].reverse()) {
+			lines.push('');
+			lines.push(`${weekdayLabel(group.day)} · Day ${group.day}`);
+			lines.push('-'.repeat(40));
+
+			// Oldest phase first within the day, for the same reason.
+			for (const entry of [...group.entries].reverse()) {
+				const when = phaseLabel(entry.phase);
+				if (entry.kind === 'event') {
+					const delta = entry.delta !== 0 ? ` (${entry.delta > 0 ? '+' : ''}${entry.delta})` : '';
+					const prefix = entry.eventKind === 'rumour' ? 'Word got around: ' : '';
+					lines.push(`[${when}] ${prefix}${entry.text}${delta}`);
+				} else {
+					const cast = entry.participants.map((c) => c.name).join(', ') || 'nobody';
+					lines.push(`[${when}] ${entry.place} — ${cast}`);
+					// Indented so a multi-sentence summary stays distinguishable from
+					// the one-line events around it.
+					for (const line of entry.summary.split('\n')) {
+						lines.push(`    ${line.trim()}`);
+					}
+				}
+			}
+		}
+
+		if (data.relations.length > 0) {
+			lines.push('');
+			lines.push('');
+			lines.push('Between Them');
+			lines.push('-'.repeat(40));
+			for (const rel of data.relations) {
+				const score = `${rel.score > 0 ? '+' : ''}${rel.score}`;
+				lines.push(
+					`${rel.characterAName} & ${rel.characterBName}: ${relationLabel(rel.score)} (${score})`
+				);
+			}
+		}
+
+		return lines.join('\n');
+	}
+
+	function exportLog() {
+		const blob = new Blob([buildExport()], { type: 'text/plain;charset=utf-8' });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		// Named by house and day, so successive exports of the same house sort
+		// together and don't overwrite each other.
+		const slug = data.house.name.replace(/[^a-z0-9]+/gi, '_').replace(/^_|_$/g, '') || 'house';
+		a.download = `${slug}_log_day${data.house.day}.txt`;
+		document.body.appendChild(a);
+		a.click();
+		document.body.removeChild(a);
+		URL.revokeObjectURL(url);
+	}
 </script>
 
 <svelte:head>
@@ -124,6 +196,20 @@
 						</p>
 					</div>
 				</div>
+
+				<!-- Everything above is left-aligned per the house pages; this pushes
+				     the one action to the end of the row rather than the far edge of
+				     an empty header. Hidden when there is nothing to write. -->
+				{#if data.events.length > 0 || data.sceneSummaries.length > 0}
+					<button
+						type="button"
+						onclick={exportLog}
+						class="btn-secondary px-4 py-2 text-sm whitespace-nowrap ml-auto"
+						title="Save the whole log as a text file"
+					>
+						Export .txt
+					</button>
+				{/if}
 			</div>
 
 			<div class="flex flex-col lg:flex-row gap-8 mt-7 items-start">
