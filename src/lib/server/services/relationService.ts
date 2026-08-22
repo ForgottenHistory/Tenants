@@ -7,13 +7,16 @@ import {
 	EVENT_KINDS,
 	EVENT_HARD_CAP,
 	EVENT_INTENSITY,
+	EVENT_PACE,
 	clampRelation,
 	relationLabel,
 	rollIntensity,
 	rollDelta,
 	intensityOf,
+	eventPace,
 	formatRelationEvent,
-	type EventIntensity
+	type EventIntensity,
+	type EventPace
 } from '$lib/house/relations';
 import { phaseId } from '$lib/house/phases';
 import { houseDirectorService, type DirectorMoment } from './houseDirectorService';
@@ -144,16 +147,35 @@ class RelationService {
 		phase: number,
 		userId?: number
 	): Promise<RelationEventResult[]> {
-		// The player's dial (General Settings → House Simulation). Falls back to
-		// the constant when no user is passed. 0 turns off-screen life off.
+		// What the housemates call the landlord when they talk about them. Only
+		// the gossip kinds use it, but it is rolled before we know which kinds
+		// came up, so it is resolved once up front rather than per event.
+		let landlordName = 'the landlord';
+		if (userId !== undefined) {
+			try {
+				const { personaService } = await import('./personaService');
+				const info = await personaService.getActiveUserInfo(userId);
+				if (info?.name) landlordName = info.name;
+			} catch {
+				// A missing persona just means they stay "the landlord", which the
+				// kind still reads correctly with.
+			}
+		}
+
+		// The player's dials (General Settings → House Simulation). Both fall back
+		// to defaults when no user is passed. 0 turns off-screen life off.
 		let chance = RELATION.EVENT_CHANCE;
+		let pace: EventPace = 'normal';
 		if (userId !== undefined) {
 			const [user] = await db
-				.select({ percent: users.houseEventPercent })
+				.select({ percent: users.houseEventPercent, pace: users.houseEventPace })
 				.from(users)
 				.where(eq(users.id, userId))
 				.limit(1);
-			if (user) chance = user.percent / 100;
+			if (user) {
+				chance = user.percent / 100;
+				pace = eventPace(user.pace);
+			}
 		}
 		if (chance <= 0) return [];
 
@@ -223,11 +245,17 @@ class RelationService {
 				other,
 				positive,
 				intensity,
-				kind: kinds.length > 0 ? kinds[Math.floor(Math.random() * kinds.length)] : '',
+				kind:
+					kinds.length > 0
+						? kinds[Math.floor(Math.random() * kinds.length)].replace(
+								/\{\{user\}\}/gi,
+								landlordName
+							)
+						: '',
 				fallback: drawFrom[Math.floor(Math.random() * drawFrom.length)],
 				// The delta the roll intends. Used as-is for a Director line, since
 				// the Director is writing to this tier as a constraint.
-				delta: rollDelta(intensity, positive)
+				delta: rollDelta(intensity, positive, pace)
 			};
 		});
 
@@ -245,7 +273,14 @@ class RelationService {
 			// fallback line carries its own authored number, which is what that
 			// sentence was written to mean. Crossing them would attach a magnitude
 			// to a moment it was not written for.
-			const delta = moment ? rolledDelta : fallback.delta;
+			//
+			// The pace multiplier still applies to the fallback, since it is a
+			// property of how fast the house moves rather than of the Director —
+			// without it, a failed call or a switched-off Director would quietly
+			// ignore the setting.
+			const delta = moment
+				? rolledDelta
+				: Math.round(fallback.delta * EVENT_PACE[pace].multiplier);
 
 			const { before, after } = await this.adjust(
 				houseId,

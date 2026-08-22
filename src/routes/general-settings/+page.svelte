@@ -20,6 +20,7 @@
 	let houseDriftPercent = $state(25);
 	let houseEventPercent = $state(28);
 	let houseDirectorEnabled = $state(false);
+	let houseEventPace = $state('normal');
 	let rumoursEnabled = $state(true);
 	let rumourAudience = $state<'home' | 'everyone'>('home');
 	let autoWorldStateEnabled = $state(false);
@@ -69,6 +70,7 @@
 				houseDriftPercent = data.houseDriftPercent ?? 25;
 				houseEventPercent = data.houseEventPercent ?? 28;
 				houseDirectorEnabled = data.houseDirectorEnabled ?? false;
+				houseEventPace = data.houseEventPace ?? 'normal';
 				rumoursEnabled = data.rumoursEnabled ?? true;
 				rumourAudience = data.rumourAudience === 'everyone' ? 'everyone' : 'home';
 				autoWorldStateEnabled = data.autoWorldStateEnabled ?? false;
@@ -97,7 +99,7 @@
 				fetch('/api/settings', {
 					method: 'PUT',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, houseDirectorEnabled, rumoursEnabled, rumourAudience, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor })
+					body: JSON.stringify({ chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, houseDirectorEnabled, houseEventPace, rumoursEnabled, rumourAudience, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor })
 				}),
 				fetch('/api/writing-style', {
 					method: 'PUT',
@@ -109,7 +111,7 @@
 			if (settingsRes.ok && writingStyleRes.ok) {
 				message = { type: 'success', text: 'Settings saved successfully!' };
 				// Dispatch event so chat components can react
-				window.dispatchEvent(new CustomEvent('settingsUpdated', { detail: { chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, houseDirectorEnabled, rumoursEnabled, rumourAudience, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor } }));
+				window.dispatchEvent(new CustomEvent('settingsUpdated', { detail: { chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, houseDirectorEnabled, houseEventPace, rumoursEnabled, rumourAudience, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, userBubbleColor } }));
 			} else {
 				const data = await settingsRes.json();
 				message = { type: 'error', text: data.error || 'Failed to save settings' };
@@ -670,6 +672,48 @@
 											opera.
 										</p>
 									{/if}
+								</div>
+
+								<!-- How fast relationships move. Scales magnitudes, not
+								     frequency: the slider above owns how often things happen. -->
+								<div class="p-4 rounded-xl border border-[var(--border-primary)]">
+									<p class="font-medium text-[var(--text-primary)]">Pace of change</p>
+									<p class="text-sm text-[var(--text-muted)] mt-1 mb-3">
+										How much each moment counts for. Events happen just as often either
+										way — this is how quickly tenants form strong opinions of each other.
+									</p>
+									<div class="space-y-2">
+										<button
+											type="button"
+											onclick={() => (houseEventPace = 'normal')}
+											class="w-full text-left p-3 rounded-lg border transition {houseEventPace ===
+											'normal'
+												? 'border-[var(--accent-primary)] bg-[var(--bg-tertiary)]'
+												: 'border-[var(--border-primary)] hover:border-[var(--border-secondary)]'}"
+										>
+											<p class="text-sm font-medium text-[var(--text-primary)]">Normal</p>
+											<p class="text-xs text-[var(--text-muted)] mt-0.5">
+												Friendships and grudges build over weeks. A pair reaching Close or
+												Hostile means a lot happened between them.
+											</p>
+										</button>
+										<button
+											type="button"
+											onclick={() => (houseEventPace = 'fast')}
+											class="w-full text-left p-3 rounded-lg border transition {houseEventPace ===
+											'fast'
+												? 'border-[var(--accent-primary)] bg-[var(--bg-tertiary)]'
+												: 'border-[var(--border-primary)] hover:border-[var(--border-secondary)]'}"
+										>
+											<p class="text-sm font-medium text-[var(--text-primary)]">
+												Fast <span class="text-[var(--text-muted)]">— 2.5x</span>
+											</p>
+											<p class="text-xs text-[var(--text-muted)] mt-0.5">
+												The house sorts itself into friends and enemies within days. Good
+												for a shorter game, or if Normal feels static.
+											</p>
+										</button>
+									</div>
 								</div>
 
 								<!-- House Director. Flavour only: the slider above still decides

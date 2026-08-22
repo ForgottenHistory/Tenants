@@ -44,6 +44,13 @@ export const users = sqliteTable('users', {
 	// an off-screen moment between housemates. 0 disables that system entirely.
 	houseDriftPercent: integer('house_drift_percent').notNull().default(25),
 	houseEventPercent: integer('house_event_percent').notNull().default(28),
+	// How fast relationships move: 'normal', or 'fast' for 2.5x every delta.
+	//
+	// Scales magnitudes rather than frequency — the same moments happen just as
+	// often, they simply count for more, so a pair reaches Warm or Hostile in
+	// proportionally fewer events. Applies to the static pools as well as the
+	// Director, since it describes the house rather than who wrote the line.
+	houseEventPace: text('house_event_pace').notNull().default('normal'),
 	// Whether the House Director writes the off-screen moments rather than
 	// drawing them from the static pools in `$lib/house/relations.ts`.
 	//

@@ -535,7 +535,26 @@ TEXT rules:
 - Invent nothing that would show up elsewhere in the game: no new tenants, no
   one moving out, no rent paid, no damage to the house, no promises from the
   landlord. The player is not present and cannot respond to any of it.
-- The landlord does not appear. These are moments between housemates only.
+- These are moments that happened while the landlord was elsewhere, so the
+  landlord is not in them. They can be talked about, but never written as
+  present, speaking, or acting — putting them in the room would be inventing
+  something the player never did. Same for any third housemate: talked about,
+  not there.
+
+When the About line is one of them talking about someone else:
+- Name who they were talking about. A third housemate must be someone actually
+  listed in THE HOUSE above, never an invented person.
+- The delta is still about THESE TWO. Gossip is a bonding or a falling-out
+  between the pair — they agreed about someone, or one of them defended the
+  person being discussed and it went badly. The absent person's own standing
+  is untouched by it.
+- Base it on what is actually in the house context. You can lean on how the
+  pair get on with the person, and on anything under "Recently in the house".
+  Do not invent grievances, complaints, or history that is not there — an
+  imagined feud will contradict what the player has actually seen.
+- When it is the landlord being discussed, keep it to the tenancy: rent,
+  repairs, how present or absent they are, how they handled something. They
+  are the landlord, not a housemate.
 - Do not repeat a moment already listed in the house context.
 - Vary how you open. Do not start every line with the first person's name in
   the same construction.

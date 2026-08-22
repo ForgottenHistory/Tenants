@@ -37,6 +37,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 		houseDriftPercent: user.houseDriftPercent ?? 25,
 		houseEventPercent: user.houseEventPercent ?? 28,
 		houseDirectorEnabled: user.houseDirectorEnabled ?? false,
+		houseEventPace: user.houseEventPace ?? 'normal',
 		rumoursEnabled: user.rumoursEnabled ?? true,
 		rumourAudience: user.rumourAudience ?? 'home',
 		autoWorldStateEnabled: user.autoWorldStateEnabled ?? false,
@@ -56,7 +57,7 @@ export const PUT: RequestHandler = async ({ cookies, request }) => {
 	}
 
 	const body = await request.json();
-	const { chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, houseDirectorEnabled, rumoursEnabled, rumourAudience, writingStyle, userBubbleColor, userTextColor } = body;
+	const { chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, houseDirectorEnabled, houseEventPace, rumoursEnabled, rumourAudience, writingStyle, userBubbleColor, userTextColor } = body;
 
 	// Validate chatLayout
 	if (chatLayout && !['bubbles', 'discord'].includes(chatLayout)) {
@@ -97,7 +98,7 @@ export const PUT: RequestHandler = async ({ cookies, request }) => {
 		return json({ error: 'Invalid text color format' }, { status: 400 });
 	}
 
-	const updateData: { chatLayout?: string; avatarStyle?: string; textCleanupEnabled?: boolean; autoWrapActions?: boolean; randomNarrationEnabled?: boolean; randomNarrationMinMessages?: number; randomNarrationMaxMessages?: number; worldSidebarEnabled?: boolean; sceneRecallPercent?: number; eventRecallDays?: number; houseDriftPercent?: number; houseEventPercent?: number; houseDirectorEnabled?: boolean; rumoursEnabled?: boolean; rumourAudience?: string; autoWorldStateEnabled?: boolean; autoWorldStateMinMessages?: number; autoWorldStateMaxMessages?: number; writingStyle?: string; userBubbleColor?: string; userTextColor?: string } = {};
+	const updateData: { chatLayout?: string; avatarStyle?: string; textCleanupEnabled?: boolean; autoWrapActions?: boolean; randomNarrationEnabled?: boolean; randomNarrationMinMessages?: number; randomNarrationMaxMessages?: number; worldSidebarEnabled?: boolean; sceneRecallPercent?: number; eventRecallDays?: number; houseDriftPercent?: number; houseEventPercent?: number; houseDirectorEnabled?: boolean; houseEventPace?: string; rumoursEnabled?: boolean; rumourAudience?: string; autoWorldStateEnabled?: boolean; autoWorldStateMinMessages?: number; autoWorldStateMaxMessages?: number; writingStyle?: string; userBubbleColor?: string; userTextColor?: string } = {};
 	if (chatLayout) updateData.chatLayout = chatLayout;
 	if (avatarStyle) updateData.avatarStyle = avatarStyle;
 	if (typeof textCleanupEnabled === 'boolean') updateData.textCleanupEnabled = textCleanupEnabled;
@@ -118,6 +119,9 @@ export const PUT: RequestHandler = async ({ cookies, request }) => {
 	// Flavour only: the Director rewrites the events the rolls above already
 	// decided, so this changes how the house reads, never how it plays.
 	if (typeof houseDirectorEnabled === 'boolean') updateData.houseDirectorEnabled = houseDirectorEnabled;
+	// Only the two known paces; anything else would land as an unreadable value
+	// that the render side silently treats as 'normal' anyway.
+	if (houseEventPace === 'normal' || houseEventPace === 'fast') updateData.houseEventPace = houseEventPace;
 	if (typeof rumoursEnabled === 'boolean') updateData.rumoursEnabled = rumoursEnabled;
 	// Only the two known audiences; anything else would silently scope rumours
 	// to nobody, since the render side treats an unknown value as 'home'.
@@ -131,5 +135,5 @@ export const PUT: RequestHandler = async ({ cookies, request }) => {
 
 	await db.update(users).set(updateData).where(eq(users.id, parseInt(userId)));
 
-	return json({ success: true, chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, houseDirectorEnabled, rumoursEnabled, rumourAudience, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, writingStyle, userBubbleColor, userTextColor });
+	return json({ success: true, chatLayout, avatarStyle, textCleanupEnabled, autoWrapActions, randomNarrationEnabled, randomNarrationMinMessages, randomNarrationMaxMessages, worldSidebarEnabled, sceneRecallPercent, eventRecallDays, houseDriftPercent, houseEventPercent, houseDirectorEnabled, houseEventPace, rumoursEnabled, rumourAudience, autoWorldStateEnabled, autoWorldStateMinMessages, autoWorldStateMaxMessages, writingStyle, userBubbleColor, userTextColor });
 };

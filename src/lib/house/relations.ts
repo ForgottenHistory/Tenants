@@ -157,6 +157,42 @@ export const EVENT_INTENSITY: Record<
 	major: { min: 10, max: 15, weight: 12, label: 'major — a real row, or real generosity' }
 };
 
+/**
+ * How fast the house's relationships move.
+ *
+ * Scales every delta, so pairs reach Warm, Close, Cool and Hostile in
+ * proportionally fewer events. Nothing else changes: the same moments happen
+ * just as often, and the same tier comes up just as often — they simply count
+ * for more.
+ *
+ * Note this scales the tier *ranges*, which is why the tier a delta belongs to
+ * is worked out from scaled bounds rather than raw numbers. A "small" moment in
+ * Fast mode is small relative to Fast mode. Scaling the number while leaving
+ * the Director's label alone would have it write "barely worth mentioning" for
+ * something worth as much as a major row.
+ */
+export type EventPace = 'normal' | 'fast';
+
+export const EVENT_PACE: Record<EventPace, { multiplier: number; label: string }> = {
+	normal: { multiplier: 1, label: 'Normal' },
+	fast: { multiplier: 2.5, label: 'Fast' }
+};
+
+/** Read a stored pace, treating anything unrecognised as the default. */
+export function eventPace(value: string | null | undefined): EventPace {
+	return value === 'fast' ? 'fast' : 'normal';
+}
+
+/** A tier's delta range at this pace. */
+export function intensityRange(
+	intensity: EventIntensity,
+	pace: EventPace = 'normal'
+): { min: number; max: number } {
+	const { multiplier } = EVENT_PACE[pace];
+	const { min, max } = EVENT_INTENSITY[intensity];
+	return { min: Math.round(min * multiplier), max: Math.round(max * multiplier) };
+}
+
 /** Draw an intensity tier by weight. */
 export function rollIntensity(): EventIntensity {
 	const tiers = Object.entries(EVENT_INTENSITY) as Array<
@@ -172,13 +208,23 @@ export function rollIntensity(): EventIntensity {
 }
 
 /** A delta for this tier and direction, rolled within the tier's range. */
-export function rollDelta(intensity: EventIntensity, positive: boolean): number {
-	const { min, max } = EVENT_INTENSITY[intensity];
+export function rollDelta(
+	intensity: EventIntensity,
+	positive: boolean,
+	pace: EventPace = 'normal'
+): number {
+	const { min, max } = intensityRange(intensity, pace);
 	const magnitude = min + Math.floor(Math.random() * (max - min + 1));
 	return positive ? magnitude : -magnitude;
 }
 
-/** Which tier an authored delta belongs to, so the static pools sort themselves. */
+/**
+ * Which tier an authored delta belongs to, so the static pools sort themselves.
+ *
+ * Always judged at normal pace: the pools are authored numbers written to the
+ * unscaled ranges, and a pace setting shouldn't retroactively promote every
+ * existing line to `minor`.
+ */
 export function intensityOf(delta: number): EventIntensity {
 	const magnitude = Math.abs(delta);
 	if (magnitude >= EVENT_INTENSITY.major.min) return 'major';
@@ -205,7 +251,9 @@ export const EVENT_KINDS: Record<PhaseId, string[]> = {
 		'a small favour, done or not done',
 		'noise, timing, or someone still asleep',
 		'the state of the kitchen',
-		'leaving the house at the same time'
+		'leaving the house at the same time',
+		'talking about another housemate who was not there',
+		'talking about {{user}}, the landlord'
 	],
 	afternoon: [
 		'running into each other out of the house',
@@ -213,7 +261,9 @@ export const EVENT_KINDS: Record<PhaseId, string[]> = {
 		'chores, or whose turn it was',
 		'borrowing something',
 		'a conversation that went somewhere unexpected',
-		'shared space being used by one of them'
+		'shared space being used by one of them',
+		'talking about another housemate who was not there',
+		'talking about {{user}}, the landlord'
 	],
 	evening: [
 		'cooking, or food',
@@ -221,7 +271,9 @@ export const EVENT_KINDS: Record<PhaseId, string[]> = {
 		'plans, guests, or someone having people over',
 		'something they watched or did together',
 		'a disagreement that had been building',
-		'one of them needing something from the other'
+		'one of them needing something from the other',
+		'talking about another housemate who was not there',
+		'talking about {{user}}, the landlord'
 	],
 	night: [
 		'noise late at night',
@@ -229,7 +281,9 @@ export const EVENT_KINDS: Record<PhaseId, string[]> = {
 		'a quiet conversation neither expected to have',
 		'locking up, lights, or the state of the house',
 		'crossing paths on the landing',
-		'one of them waiting up, or worrying'
+		'one of them waiting up, or worrying',
+		'talking about another housemate who was not there',
+		'talking about {{user}}, the landlord'
 	]
 };
 
