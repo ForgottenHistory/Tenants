@@ -402,6 +402,11 @@
 						<a href="/house/tenants" class="btn-secondary px-5 py-2.5 whitespace-nowrap">
 							Tenants
 						</a>
+						<!-- Where money goes. Always available — building rooms is what you
+						     do with an empty house as much as a full one. -->
+						<a href="/house/upgrade" class="btn-secondary px-5 py-2.5 whitespace-nowrap">
+							Upgrade
+						</a>
 					</div>
 
 				<div class="flex items-center gap-8">

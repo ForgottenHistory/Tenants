@@ -15,7 +15,12 @@ import {
 } from '../db/schema';
 import { eq, and, desc, lte } from 'drizzle-orm';
 import type { House, Bedroom, SharedSpace } from '../db/schema';
-import { DEFAULT_BASE_RENT, DEFAULT_STARTING_BALANCE } from '$lib/house/spacePresets';
+import {
+	DEFAULT_BASE_RENT,
+	DEFAULT_STARTING_BALANCE,
+	MAX_BEDROOMS
+} from '$lib/house/spacePresets';
+import { bedroomBuildCost } from '$lib/house/upgrades';
 import { nextPhase } from '$lib/house/phases';
 import { LEASE_EXPIRY_ENABLED } from '$lib/house/tenancy';
 import { occupancyService } from './occupancyService';
@@ -307,6 +312,68 @@ class HouseService {
 				.all();
 
 			return updated;
+		});
+	}
+
+	/**
+	 * Build another bedroom, paid for out of the house balance.
+	 *
+	 * The whole thing is one transaction and the balance is re-read *inside* it:
+	 * the page quotes a price from data it loaded earlier, so between the quote
+	 * and the click the balance may have moved (rent, another tab). Charging
+	 * against a stale figure is how a house ends up with a negative balance.
+	 *
+	 * The cost is derived from the room count rather than passed in, for the
+	 * same reason — a client that names its own price sets it to zero.
+	 */
+	async buildBedroom(
+		houseId: number,
+		userId: number,
+		input: { name?: string | null; baseRent?: number }
+	): Promise<{ house: House; bedroom: Bedroom; cost: number }> {
+		const house = await this.getHouseById(houseId, userId);
+		if (!house) throw new Error('House not found');
+
+		return db.transaction((tx) => {
+			const existing = tx
+				.select()
+				.from(bedrooms)
+				.where(eq(bedrooms.houseId, houseId))
+				.orderBy(bedrooms.sortOrder)
+				.all();
+
+			if (existing.length >= MAX_BEDROOMS) {
+				throw new Error(`A house can have at most ${MAX_BEDROOMS} bedrooms`);
+			}
+
+			const [current] = tx.select().from(houses).where(eq(houses.id, houseId)).limit(1).all();
+			const cost = bedroomBuildCost(existing.length);
+
+			if (current.balance < cost) {
+				throw new Error('Not enough money to build that room');
+			}
+
+			const sortOrder = existing.reduce((max, room) => Math.max(max, room.sortOrder), -1) + 1;
+
+			const [bedroom] = tx
+				.insert(bedrooms)
+				.values({
+					houseId,
+					name: input.name?.trim() || `Room ${existing.length + 1}`,
+					sortOrder,
+					baseRent: input.baseRent ?? DEFAULT_BASE_RENT
+				})
+				.returning()
+				.all();
+
+			const [updated] = tx
+				.update(houses)
+				.set({ balance: current.balance - cost, updatedAt: new Date() })
+				.where(eq(houses.id, houseId))
+				.returning()
+				.all();
+
+			return { house: updated, bedroom, cost };
 		});
 	}
 
