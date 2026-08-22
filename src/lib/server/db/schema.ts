@@ -649,6 +649,18 @@ export const relations = sqliteTable('relations', {
 		.references(() => characters.id, { onDelete: 'cascade' }),
 	// -100..100. Bands are derived (see $lib/house/relations.ts), not stored.
 	score: integer('score').notNull().default(0),
+	// Whether these two click, as a percentage-point shift on the odds that any
+	// given moment between them goes well. Rolled once when the pair first comes
+	// up and never changed, so a dynamic stays consistent across a whole game.
+	//
+	// Stored rather than derived from the character ids, because a deterministic
+	// hash would give the same pair the same chemistry in every house and across
+	// every restart — the point is that a cast plays differently each run.
+	//
+	// Hidden from the player. It biases which way events fall, never the size of
+	// them, so it never shows up as a number in the log — only as a pair who
+	// somehow keep having good days.
+	chemistry: integer('chemistry').notNull().default(0),
 	updatedAt: integer('updated_at', { mode: 'timestamp' })
 		.notNull()
 		.$defaultFn(() => new Date())

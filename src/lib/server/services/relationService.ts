@@ -14,6 +14,8 @@ import {
 	rollDelta,
 	intensityOf,
 	eventPace,
+	rollChemistry,
+	positiveChance,
 	formatRelationEvent,
 	type EventIntensity,
 	type EventPace
@@ -87,6 +89,46 @@ class RelationService {
 	}
 
 	/**
+	 * Whether these two click, rolled once and kept.
+	 *
+	 * Rolled lazily on first access rather than when a tenancy starts: a pair
+	 * has no row until something happens between them, and there is no single
+	 * moment when "these two now share a house" is true for every path that
+	 * creates a tenancy. Rolling on read means whoever asks first sets it, and
+	 * everyone after that gets the same answer.
+	 *
+	 * The row is created here if it does not exist, so the chemistry survives
+	 * even when the pair's score is still 0.
+	 */
+	async getChemistry(houseId: number, characterAId: number, characterBId: number): Promise<number> {
+		const [lo, hi] = this.orderPair(characterAId, characterBId);
+		const [existing] = await db
+			.select()
+			.from(relations)
+			.where(
+				and(
+					eq(relations.houseId, houseId),
+					eq(relations.characterAId, lo),
+					eq(relations.characterBId, hi)
+				)
+			)
+			.limit(1);
+
+		if (existing) return existing.chemistry;
+
+		const chemistry = rollChemistry();
+		await db.insert(relations).values({
+			houseId,
+			characterAId: lo,
+			characterBId: hi,
+			score: RELATION.INITIAL,
+			chemistry,
+			updatedAt: new Date()
+		});
+		return chemistry;
+	}
+
+	/**
 	 * Move a pair's relation, clamped. Upserts, since a pair has no row until
 	 * something actually happens between them.
 	 */
@@ -119,11 +161,15 @@ class RelationService {
 				.set({ score: after, updatedAt: new Date() })
 				.where(eq(relations.id, existing.id));
 		} else {
+			// Rolled here too: `adjust` can be the first thing to touch a pair (a
+			// scene between them before any off-screen moment), and a row created
+			// with a default 0 would silently deny them any chemistry at all.
 			await db.insert(relations).values({
 				houseId,
 				characterAId: lo,
 				characterBId: hi,
 				score: after,
+				chemistry: rollChemistry(),
 				updatedAt: new Date()
 			});
 		}
@@ -213,6 +259,12 @@ class RelationService {
 
 		const kinds = EVENT_KINDS[phaseId(phase)] ?? [];
 
+		// Chemistry for each chosen pair, resolved before the draw because it
+		// biases the valence roll and reading it may have to create the row.
+		const chemistries = await Promise.all(
+			chosen.map(([a, b]) => this.getChemistry(houseId, a.characterId, b.characterId))
+		);
+
 		// Everything above and inside this map is the game deciding what happened:
 		// which pairs, how many, who acted, whether it went well, and how much it
 		// mattered. The Director only ever writes the prose for those decisions.
@@ -224,7 +276,12 @@ class RelationService {
 			// Valence stays a roll rather than the Director's call: it is the half
 			// of the event that actually moves the score, and the whole point of
 			// the split is that the dice own the game and the LLM owns the wording.
-			const positive = Math.random() < 0.5;
+			//
+			// Chemistry tilts the odds rather than the outcome — a pair who grate
+			// still has good days, just fewer of them. Biasing WHICH WAY events
+			// fall (never how big they are) is what keeps it invisible: nothing in
+			// the log ever shows a chemistry number, only a pattern over weeks.
+			const positive = Math.random() < positiveChance(chemistries[index]);
 			const intensity = rollIntensity();
 
 			// The fallback is drawn from the same valence and tier the roll picked,

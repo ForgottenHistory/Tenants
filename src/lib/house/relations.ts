@@ -315,3 +315,62 @@ export const EVENT_RECALL_DAYS_MAX = 14;
  * context window.
  */
 export const EVENT_HARD_CAP = 20;
+
+/**
+ * Whether two people click.
+ *
+ * Some pairs get on and some grate, for reasons that have nothing to do with
+ * what has happened between them. Without this every pair is the same coin
+ * flip, and a house of six ends up with six mildly-positive relationships that
+ * all look alike.
+ *
+ * Deliberately NOT derived from the characters themselves. Scoring cards on
+ * something like Big Five sounds better but doesn't survive contact with real
+ * cards: descriptions are written to make a character appealing, so almost
+ * everyone lands agreeable and outgoing, and the resulting spread is too narrow
+ * to produce different outcomes. A hidden roll gives the variety that trait
+ * matching promises but doesn't deliver — and chemistry between people really
+ * is somewhat arbitrary.
+ *
+ * Expressed in percentage points on the odds a moment goes well, so it biases
+ * WHICH WAY events fall and never how big they are. That keeps it invisible:
+ * there is no number in the log, no second axis in the UI, just a pair who
+ * somehow keep having good days.
+ */
+export const CHEMISTRY = {
+	/**
+	 * Furthest a pair can sit from an even coin flip, in percentage points.
+	 *
+	 * Small on purpose. This is applied to every event over a whole game, so it
+	 * compounds: at ±15 two thirds of extreme pairs were Hostile or Close inside
+	 * six weeks, which makes chemistry the thing that decides the relationship
+	 * rather than something that colours it. At ±6 an extreme pair clearly
+	 * trends, but still lands anywhere — which is the point.
+	 */
+	MAX_SKEW: 6,
+
+	/**
+	 * Odds of a positive moment for a pair with no chemistry, as a fraction.
+	 * The existing flat coin flip, kept as the centre of the distribution.
+	 */
+	BASE: 0.5
+} as const;
+
+/**
+ * Roll a pair's chemistry.
+ *
+ * Triangular rather than uniform — averaging two draws clusters pairs near
+ * neutral and makes a strong dynamic rare enough to be worth noticing. A flat
+ * distribution would make "these two really don't work" as common as "these two
+ * are fine", which is not how a house full of people feels.
+ */
+export function rollChemistry(): number {
+	const spread = (Math.random() + Math.random()) / 2; // 0..1, centred on 0.5
+	return Math.round((spread * 2 - 1) * CHEMISTRY.MAX_SKEW);
+}
+
+/** The odds a moment between this pair goes well, as a fraction 0..1. */
+export function positiveChance(chemistry: number): number {
+	const skew = Math.max(-CHEMISTRY.MAX_SKEW, Math.min(CHEMISTRY.MAX_SKEW, chemistry));
+	return CHEMISTRY.BASE + skew / 100;
+}
